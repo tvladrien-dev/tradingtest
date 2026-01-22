@@ -1,7 +1,21 @@
-streamlit>=1.31.0
-altair>=5.0.0
-yfinance>=0.2.38
-pandas>=2.0.0
-ta>=0.11.0
-numpy>=1.24.0
-plotly==6.0.0
+# --- CORE FRAMEWORK ---
+streamlit==1.31.0
+pandas==2.2.0
+numpy==1.26.4
+
+# --- ANALYSE TECHNIQUE & DONNÉES ---
+yfinance==0.2.36
+ta==0.11.0
+scipy==1.12.0
+
+# --- VISUALISATION ---
+plotly==5.18.0
+
+# --- SCRAPING & NEWS ---
+beautifulsoup4==4.12.3
+requests==2.31.0
+lxml==5.1.0
+
+# --- UTILS ---
+python-dateutil==2.8.2
+certifi==2024.2.2
