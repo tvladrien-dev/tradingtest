@@ -6,8 +6,7 @@ import sys
 import os
 from datetime import datetime
 
-# --- OPTIMISATION DU PATH SYSTEME ---
-# S'assure que Streamlit Cloud voit les dossiers locaux même sans __init__.py complexes
+# --- OPTIMISATION DU CHEMIN SYSTÈME ---
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # 1. IMPORTS DES MODULES PROPRIÉTAIRES
@@ -20,27 +19,23 @@ try:
     from ui.dashboard import Dashboard
     from ui.components import UIComponents
 except ImportError as e:
-    st.error(f"❌ ERREUR DE STRUCTURE : {e}")
-    st.info("Assurez-vous que les dossiers 'engine', 'ui' et 'config' contiennent bien leurs fichiers respectifs.")
+    st.error(f"🛑 ERREUR DE STRUCTURE : {e}")
     st.stop()
 
 # Configuration du logging professionnel
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
+    format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("QuantMaster")
 
 def main():
-    # --- INITIALISATION DE L'INTERFACE ---
+    # --- INITIALISATION UI & THÈME ---
     ui_tools = UIComponents()
-    ui_tools.set_page_config() # Configuration thème sombre et layout large
-    
+    ui_tools.set_page_config()
     dashboard = Dashboard(settings)
     
-    # --- PERSISTENCE DES MOTEURS (SESSION STATE) ---
-    # On utilise le cache de session pour éviter de recharger les moteurs à chaque interaction
+    # --- PERSISTENCE DES MOTEURS & ÉTAT DE SESSION ---
     if 'data_loader' not in st.session_state:
         st.session_state.data_loader = DataLoader()
     if 'bot' not in st.session_state:
@@ -49,60 +44,79 @@ def main():
         st.session_state.regime_filter = MarketRegimeFilter()
     if 'news_engine' not in st.session_state:
         st.session_state.news_engine = NewsEngine()
+    
+    # Cache pour éviter de notifier plusieurs fois le même signal dans la journée
+    if 'notified_tickers' not in st.session_state:
+        st.session_state.notified_tickers = {}
 
-    # --- BARRE LATÉRALE (SIDEBAR) ---
-    # Récupère les filtres utilisateur (Recherche, Mode de scan)
+    # --- BARRE LATÉRALE ---
     sidebar_params = dashboard.render_sidebar()
     
-    # --- CYCLE DE TRADING ---
-    st.toast("Synchronisation avec Euronext Paris en cours...", icon="🔄")
+    # --- DÉBUT DU CYCLE DE SCAN ---
+    st.toast("Initialisation du terminal Alpha Quant...", icon="🚀")
     
     try:
-        # ÉTAPE 1 : Analyse du Régime de Marché (Macro Filter)
-        with st.spinner("Analyse du contexte macro-économique..."):
+        # ÉTAPE 1 : Analyse Macro (Régime de Marché)
+        with st.spinner("Analyse du sentiment de marché (CAC40)..."):
             market_status = st.session_state.regime_filter.get_market_status()
         
-        # ÉTAPE 2 : Acquisition massive des données
-        # On utilise les tickers définis dans config/settings.py
-        with st.spinner(f"Acquisition des flux pour {len(settings.TICKERS_PEA)} actifs..."):
+        # ÉTAPE 2 : Acquisition des flux boursiers
+        with st.spinner(f"Synchronisation de {len(settings.TICKERS_PEA)} actifs..."):
             raw_data = st.session_state.data_loader.download_market_data(settings.TICKERS_PEA)
         
         if not raw_data:
-            st.error("⚠️ Flux de données interrompu. Tentative de reconnexion au prochain cycle.")
+            st.error("⚠️ Impossible de joindre les serveurs de données. Re-tentative automatique...")
             time.sleep(10)
             st.rerun()
 
-        # ÉTAPE 3 : Traitement Quantitatif (Signaux Alpha)
+        # ÉTAPE 3 : Analyse Quantitative & Signaux
         all_signals = []
         progress_bar = st.progress(0)
         
         for i, (ticker, df) in enumerate(raw_data.items()):
-            # Analyse technique profonde pour chaque actif
+            # Analyse profonde via le moteur de trading
             signal_data = st.session_state.bot.analyze(ticker, df)
-            if signal_data:
-                # On enrichit le signal avec le multiplicateur de risque macro
-                signal_data['Risk_Adj_Size'] = market_status['multiplier']
-                all_signals.append(signal_data)
             
-            # Mise à jour de la barre de progression
+            if signal_data:
+                # Injection de la direction macro dans le signal
+                signal_data['Market_Trend'] = market_status['status']
+                all_signals.append(signal_data)
+                
+                # --- SYSTÈME DE NOTIFICATION NTFY ---
+                if signal_data.get('Signal') == 1:
+                    last_price = signal_data.get('Close')
+                    
+                    # On ne notifie que si c'est un nouveau signal ou si le prix a bougé de 2%
+                    should_notify = False
+                    if ticker not in st.session_state.notified_tickers:
+                        should_notify = True
+                    else:
+                        old_price = st.session_state.notified_tickers[ticker]
+                        if abs((last_price / old_price) - 1) > 0.02:
+                            should_notify = True
+                    
+                    if should_notify:
+                        success = st.session_state.news_engine.send_ntfy_alert(
+                            signal_data=signal_data,
+                            topic=settings.NOTIFICATIONS.get("NTFY_TOPIC")
+                        )
+                        if success:
+                            st.session_state.notified_tickers[ticker] = last_price
+                            st.toast(f"📱 Alerte Push envoyée pour {ticker}", icon="📲")
+
             progress_bar.progress((i + 1) / len(raw_data))
         
-        # Nettoyage de la barre de progression après le scan
         progress_bar.empty()
-        
-        # Conversion en DataFrame pour manipulation facile
         signals_df = pd.DataFrame(all_signals)
 
-        # ÉTAPE 4 : Rendu du Dashboard Principal
-        # On injecte les données traitées dans la vue
+        # ÉTAPE 4 : Rendu de l'Interface Dashboard
         dashboard.render_main_view(
             market_status=market_status,
             signals_df=signals_df,
             news_engine=st.session_state.news_engine
         )
 
-        # ÉTAPE 5 : Calcul du prochain cycle de rafraîchissement
-        # Si la volatilité est haute (>22%), on scanne plus vite
+        # ÉTAPE 5 : Gestion du cycle de rafraîchissement
         refresh_delay = (
             settings.REFRESH_RATES["HIGH_VOLATILITY"] 
             if market_status['volatility'] > 22 
@@ -111,36 +125,30 @@ def main():
 
         dashboard.render_footer()
 
-        # --- GESTION DU TEMPS RÉEL (AUTO-REFRESH) ---
+        # --- AUTO-REFRESH LOGIC ---
         st.divider()
         placeholder_timer = st.empty()
         
-        # Vérification si la bourse est ouverte avant de lancer le décompte
-        is_open = st.session_state.data_loader.check_market_hours()
-        
-        if is_open:
+        if st.session_state.data_loader.check_market_hours():
             for i in range(refresh_delay, 0, -1):
                 placeholder_timer.markdown(
-                    f"<div style='text-align: center; color: #00FF41;'>"
-                    f"⌛ PROCHAIN SCAN AUTOMATIQUE DANS {i} SECONDES"
+                    f"<div style='text-align:center; color:#00FF41; font-family:monospace;'>"
+                    f"🕒 PROCHAIN SCAN DANS {i}s (MODE: {sidebar_params['mode'].upper()})"
                     f"</div>", 
                     unsafe_allow_html=True
                 )
                 time.sleep(1)
             st.rerun()
         else:
-            placeholder_timer.warning(
-                "🌙 LE MARCHÉ EST ACTUELLEMENT FERMÉ. "
-                "Le scan automatique est en veille jusqu'à demain 09:00."
-            )
-            if st.button("📊 Forcer un scan (Données de clôture)"):
+            placeholder_timer.info("🌙 Marché fermé. Scan automatique en pause (Ouverture 09:00).")
+            if st.button("🔄 Lancer un scan manuel (Données différées)"):
                 st.rerun()
 
     except Exception as e:
-        logger.error(f"Erreur fatale de l'application : {e}", exc_info=True)
-        st.error("### 🛑 Une erreur critique est survenue.")
-        st.exception(e)
-        if st.button("Redémarrer le moteur"):
+        logger.error(f"CRITICAL SYSTEM ERROR: {e}", exc_info=True)
+        st.error(f"🚨 Erreur Système : {str(e)}")
+        if st.button("Réinitialiser le Terminal"):
+            st.session_state.clear()
             st.rerun()
 
 if __name__ == "__main__":
