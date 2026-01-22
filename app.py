@@ -2,28 +2,45 @@ import streamlit as st
 import pandas as pd
 import time
 import logging
+import sys
+import os
 from datetime import datetime
 
-# 1. Imports des modules propriétaires
-from config import settings
-from engine.data_loader import DataLoader
-from engine.trading_bot import TradingBotPEA
-from engine.regime import MarketRegimeFilter
-from engine.news import NewsEngine
-from ui.dashboard import Dashboard
-from ui.components import UIComponents
+# --- OPTIMISATION DU PATH SYSTEME ---
+# S'assure que Streamlit Cloud voit les dossiers locaux même sans __init__.py complexes
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-# Configuration du logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# 1. IMPORTS DES MODULES PROPRIÉTAIRES
+try:
+    from config import settings
+    from engine.data_loader import DataLoader
+    from engine.trading_bot import TradingBotPEA
+    from engine.regime import MarketRegimeFilter
+    from engine.news import NewsEngine
+    from ui.dashboard import Dashboard
+    from ui.components import UIComponents
+except ImportError as e:
+    st.error(f"❌ ERREUR DE STRUCTURE : {e}")
+    st.info("Assurez-vous que les dossiers 'engine', 'ui' et 'config' contiennent bien leurs fichiers respectifs.")
+    st.stop()
+
+# Configuration du logging professionnel
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger("QuantMaster")
 
 def main():
-    # --- INITIALISATION UI ---
+    # --- INITIALISATION DE L'INTERFACE ---
     ui_tools = UIComponents()
-    ui_tools.set_page_config()
+    ui_tools.set_page_config() # Configuration thème sombre et layout large
     
     dashboard = Dashboard(settings)
     
-    # --- INITIALISATION MOTEURS (CACHÉS DANS LA SESSION) ---
+    # --- PERSISTENCE DES MOTEURS (SESSION STATE) ---
+    # On utilise le cache de session pour éviter de recharger les moteurs à chaque interaction
     if 'data_loader' not in st.session_state:
         st.session_state.data_loader = DataLoader()
     if 'bot' not in st.session_state:
@@ -33,44 +50,60 @@ def main():
     if 'news_engine' not in st.session_state:
         st.session_state.news_engine = NewsEngine()
 
-    # --- BARRE LATÉRALE & FILTRES ---
+    # --- BARRE LATÉRALE (SIDEBAR) ---
+    # Récupère les filtres utilisateur (Recherche, Mode de scan)
     sidebar_params = dashboard.render_sidebar()
     
-    # --- LOGIQUE DE SCAN ---
-    st.toast("Initialisation du scan Euronext...", icon="🚀")
+    # --- CYCLE DE TRADING ---
+    st.toast("Synchronisation avec Euronext Paris en cours...", icon="🔄")
     
     try:
-        # 1. Analyse du Régime de Marché (Macro)
-        with st.spinner("Analyse du contexte macro (CAC40)..."):
+        # ÉTAPE 1 : Analyse du Régime de Marché (Macro Filter)
+        with st.spinner("Analyse du contexte macro-économique..."):
             market_status = st.session_state.regime_filter.get_market_status()
         
-        # 2. Acquisition des Données (Flux yFinance)
-        with st.spinner(f"Téléchargement de {len(settings.TICKERS_PEA)} actifs..."):
+        # ÉTAPE 2 : Acquisition massive des données
+        # On utilise les tickers définis dans config/settings.py
+        with st.spinner(f"Acquisition des flux pour {len(settings.TICKERS_PEA)} actifs..."):
             raw_data = st.session_state.data_loader.download_market_data(settings.TICKERS_PEA)
         
         if not raw_data:
-            st.error("Impossible de récupérer les données boursières. Vérifiez votre connexion.")
-            return
+            st.error("⚠️ Flux de données interrompu. Tentative de reconnexion au prochain cycle.")
+            time.sleep(10)
+            st.rerun()
 
-        # 3. Génération des Signaux (Quant Engine)
+        # ÉTAPE 3 : Traitement Quantitatif (Signaux Alpha)
         all_signals = []
-        for ticker, df in raw_data.items():
-            # Le bot analyse chaque dataframe pour trouver des opportunités
+        progress_bar = st.progress(0)
+        
+        for i, (ticker, df) in enumerate(raw_data.items()):
+            # Analyse technique profonde pour chaque actif
             signal_data = st.session_state.bot.analyze(ticker, df)
             if signal_data:
+                # On enrichit le signal avec le multiplicateur de risque macro
+                signal_data['Risk_Adj_Size'] = market_status['multiplier']
                 all_signals.append(signal_data)
+            
+            # Mise à jour de la barre de progression
+            progress_bar.progress((i + 1) / len(raw_data))
         
+        # Nettoyage de la barre de progression après le scan
+        progress_bar.empty()
+        
+        # Conversion en DataFrame pour manipulation facile
         signals_df = pd.DataFrame(all_signals)
 
-        # 4. Rendu de l'Interface Principale
+        # ÉTAPE 4 : Rendu du Dashboard Principal
+        # On injecte les données traitées dans la vue
         dashboard.render_main_view(
             market_status=market_status,
             signals_df=signals_df,
             news_engine=st.session_state.news_engine
         )
 
-        # 5. Gestion de la boucle de rafraîchissement
-        refresh_time = (
+        # ÉTAPE 5 : Calcul du prochain cycle de rafraîchissement
+        # Si la volatilité est haute (>22%), on scanne plus vite
+        refresh_delay = (
             settings.REFRESH_RATES["HIGH_VOLATILITY"] 
             if market_status['volatility'] > 22 
             else settings.REFRESH_RATES["LOW_VOLATILITY"]
@@ -78,23 +111,37 @@ def main():
 
         dashboard.render_footer()
 
-        # --- SYSTÈME DE COMPTE À REBOURS ---
+        # --- GESTION DU TEMPS RÉEL (AUTO-REFRESH) ---
         st.divider()
         placeholder_timer = st.empty()
         
-        if st.session_state.data_loader.check_market_hours():
-            for i in range(refresh_time, 0, -1):
-                placeholder_timer.caption(f"🕒 Prochain scan automatique dans {i} secondes (Mode: {sidebar_params['mode']})")
+        # Vérification si la bourse est ouverte avant de lancer le décompte
+        is_open = st.session_state.data_loader.check_market_hours()
+        
+        if is_open:
+            for i in range(refresh_delay, 0, -1):
+                placeholder_timer.markdown(
+                    f"<div style='text-align: center; color: #00FF41;'>"
+                    f"⌛ PROCHAIN SCAN AUTOMATIQUE DANS {i} SECONDES"
+                    f"</div>", 
+                    unsafe_allow_html=True
+                )
                 time.sleep(1)
             st.rerun()
         else:
-            st.info("🌙 Marché fermé. Le scan automatique reprendra à l'ouverture d'Euronext (09:00).")
-            if st.button("🔄 Forcer un rafraîchissement manuel"):
+            placeholder_timer.warning(
+                "🌙 LE MARCHÉ EST ACTUELLEMENT FERMÉ. "
+                "Le scan automatique est en veille jusqu'à demain 09:00."
+            )
+            if st.button("📊 Forcer un scan (Données de clôture)"):
                 st.rerun()
 
     except Exception as e:
-        st.error(f"Erreur critique lors de l'exécution : {str(e)}")
-        logging.error(f"CRITICAL ERROR: {e}", exc_info=True)
+        logger.error(f"Erreur fatale de l'application : {e}", exc_info=True)
+        st.error("### 🛑 Une erreur critique est survenue.")
+        st.exception(e)
+        if st.button("Redémarrer le moteur"):
+            st.rerun()
 
 if __name__ == "__main__":
     main()
