@@ -1,218 +1,100 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from datetime import datetime, timedelta
-import logging
-import os
-import sys
-import requests
-import pytz
 import time
+import logging
+from datetime import datetime
 
-# =====================================================================
-# 1. ARCHITECTURE ET CONFIGURATION SYSTÈME
-# =====================================================================
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# 1. Imports des modules propriétaires
+from config import settings
+from engine.data_loader import DataLoader
+from engine.trading_bot import TradingBotPEA
+from engine.regime import MarketRegimeFilter
+from engine.news import NewsEngine
+from ui.dashboard import Dashboard
+from ui.components import UIComponents
 
-if not os.path.exists('logs'):
-    os.makedirs('logs')
+# Configuration du logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    handlers=[logging.FileHandler("logs/terminal_master.log"), logging.StreamHandler()]
-)
-
-# Chargement des moteurs propriétaires
-try:
-    from engine.trading_bot import TradingBotPEA
-    from engine.backtester import Backtester
-    from engine.regime import MarketRegimeFilter
-    from engine.news import NewsEngine
-except ImportError as e:
-    st.error(f"❌ COMPOSANT CRITIQUE MANQUANT : {e}")
-    st.stop()
-
-# =====================================================================
-# 2. MOTEURS D'ALERTE PUSH ET SCRAPER D'AGENDA
-# =====================================================================
-class AlertEngine:
-    def __init__(self, topic_name):
-        self.url = f"https://ntfy.sh/{topic_name}"
-
-    def send_notification(self, title, message, priority="default"):
-        try:
-            requests.post(self.url,
-                data=message.encode('utf-8'),
-                headers={
-                    "Title": title.encode('utf-8'),
-                    "Priority": priority,
-                    "Tags": "chart_with_upwards_trend,warning"
-                }, timeout=5)
-        except Exception as e:
-            logging.error(f"Erreur envoi notification : {e}")
-
-class AgendaScraper:
-    def get_global_market_news(self):
-        return [
-            {"title": "BCE : Stabilité des taux anticipée en Q1", "source": "Reuters", "region": "Europe", "impact": "High"},
-            {"title": "L'inflation US ralentit à 2.9%", "source": "Bloomberg", "region": "World", "impact": "Critical"},
-            {"title": "Luxe : Reprise de la demande chinoise", "source": "Les Echos", "region": "Europe", "impact": "Medium"}
-        ]
-
-    def get_future_events(self, days=30):
-        now = datetime.now()
-        return [
-            {"date": (now + timedelta(days=1)).strftime('%d %b %Y'), "time": "14:30", "event": "Inflation US (CPI)", "impact": "HIGH", "type": "Macro", "forecast": "3.1%"},
-            {"date": (now + timedelta(days=5)).strftime('%d %b %Y'), "time": "08:00", "event": "Résultats LVMH", "impact": "HIGH", "type": "Earnings", "forecast": "N/A"}
-        ]
-
-# =====================================================================
-# 3. DESIGN SYSTEM (Bloomberg Style)
-# =====================================================================
-st.set_page_config(page_title="QUANT MASTER ELITE v12.5", layout="wide")
-
-st.markdown("""
-    <style>
-    .stApp { background-color: #0b0e11; color: #adbac7; font-family: 'Inter', sans-serif; }
-    [data-testid="stMetricValue"] { font-size: 1.8rem !important; color: #58a6ff !important; font-family: 'JetBrains Mono'; }
-    .alpha-card {
-        background: linear-gradient(165deg, #161b22 0%, #0d1117 100%);
-        padding: 20px; border-radius: 12px; border: 1px solid #30363d;
-        border-left: 6px solid #58a6ff; margin-bottom: 20px;
-    }
-    .buy-zone-highlight { background: rgba(0, 255, 153, 0.08); border: 1px solid #00ff99; padding: 5px; border-radius: 4px; color: #00ff99 !important; }
-    .radar-card { background: #161b22; padding: 15px; border-radius: 10px; border: 1px solid #30363d; border-top: 4px solid #58a6ff; margin-bottom:10px;}
-    .news-item-radar { background: #1c2128; border-left: 2px solid #58a6ff; padding: 5px; margin-bottom: 5px; font-size: 0.8rem; }
-    </style>
-    """, unsafe_allow_html=True)
-
-# =====================================================================
-# 4. INITIALISATION DES MOTEURS
-# =====================================================================
-@st.cache_resource
-def init_all_engines():
-    return (
-        TradingBotPEA(), 
-        NewsEngine(), 
-        MarketRegimeFilter(index_ticker="^FCHI"),
-        AlertEngine("quant_pea_master_alert_2026"),
-        AgendaScraper()
-    )
-
-bot, news_engine, regime_filter, alert_manager, agenda_scraper = init_all_engines()
-
-# États de session pour le temps réel
-if "last_update" not in st.session_state:
-    st.session_state.last_update = datetime.now()
-if "notified_tickers" not in st.session_state:
-    st.session_state.notified_tickers = {}
-
-# =====================================================================
-# 5. LOGIQUE DE CALCUL DYNAMIQUE
-# =====================================================================
-def calculate_dynamic_buy_zone(current_price, atr_value):
-    return current_price - (atr_value * 0.5)
-
-# =====================================================================
-# 6. SIDEBAR & FILTRES
-# =====================================================================
-with st.sidebar:
-    st.title("🏛️ QUANT TERMINAL")
-    mkt_status = regime_filter.get_market_status()
+def main():
+    # --- INITIALISATION UI ---
+    ui_tools = UIComponents()
+    ui_tools.set_page_config()
     
-    # Rafraîchissement dynamique (VIX-based)
-    vix = mkt_status["volatility"]
-    refresh_rate = 60 if vix > 25 else 300
-    st.info(f"🔄 Rafraîchissement: {refresh_rate}s")
+    dashboard = Dashboard(settings)
     
-    st.divider()
-    initial_cap = st.number_input("Capital (€)", value=25000)
-    depth = st.selectbox("Historique", ["1y", "2y", "3y"], index=1)
+    # --- INITIALISATION MOTEURS (CACHÉS DANS LA SESSION) ---
+    if 'data_loader' not in st.session_state:
+        st.session_state.data_loader = DataLoader()
+    if 'bot' not in st.session_state:
+        st.session_state.bot = TradingBotPEA()
+    if 'regime_filter' not in st.session_state:
+        st.session_state.regime_filter = MarketRegimeFilter()
+    if 'news_engine' not in st.session_state:
+        st.session_state.news_engine = NewsEngine()
+
+    # --- BARRE LATÉRALE & FILTRES ---
+    sidebar_params = dashboard.render_sidebar()
     
-    sectors = sorted(list(set([x["sector"] for x in bot.universe_data])))
-    sel_sectors = st.multiselect("Secteurs", sectors, default=sectors)
-    active_tickers = [x["ticker"] for x in bot.universe_data if x["sector"] in sel_sectors]
+    # --- LOGIQUE DE SCAN ---
+    st.toast("Initialisation du scan Euronext...", icon="🚀")
+    
+    try:
+        # 1. Analyse du Régime de Marché (Macro)
+        with st.spinner("Analyse du contexte macro (CAC40)..."):
+            market_status = st.session_state.regime_filter.get_market_status()
+        
+        # 2. Acquisition des Données (Flux yFinance)
+        with st.spinner(f"Téléchargement de {len(settings.TICKERS_PEA)} actifs..."):
+            raw_data = st.session_state.data_loader.download_market_data(settings.TICKERS_PEA)
+        
+        if not raw_data:
+            st.error("Impossible de récupérer les données boursières. Vérifiez votre connexion.")
+            return
 
-# =====================================================================
-# 7. BOUCLE DE RENDU TEMPS RÉEL
-# =====================================================================
-# Headers Macro
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("CAC 40", f"{mkt_status['last_price']:.1f}")
-c2.metric("VIX (Stress)", f"{mkt_status['volatility']:.1f}")
-c3.metric("Régime", mkt_status["status"])
-c4.metric("Expo Max", f"{mkt_status['multiplier']*100}%")
+        # 3. Génération des Signaux (Quant Engine)
+        all_signals = []
+        for ticker, df in raw_data.items():
+            # Le bot analyse chaque dataframe pour trouver des opportunités
+            signal_data = st.session_state.bot.analyze(ticker, df)
+            if signal_data:
+                all_signals.append(signal_data)
+        
+        signals_df = pd.DataFrame(all_signals)
 
-# Lancement automatique du Scan
-bot.download_data(period=depth)
-bot.generate_elite_signals(filter_list=active_tickers)
-sigs = bot.get_combined_signals()
-latest = bot.get_last_state()
+        # 4. Rendu de l'Interface Principale
+        dashboard.render_main_view(
+            market_status=market_status,
+            signals_df=signals_df,
+            news_engine=st.session_state.news_engine
+        )
 
-# Traitement des alertes push
-if not latest.empty:
-    buys = latest[latest["Signal"] == 1]
-    for _, row in buys.iterrows():
-        t = row['Ticker']
-        if t not in st.session_state.notified_tickers:
-            alert_manager.send_notification("🎯 SIGNAL ACHAT", f"{row['Nom']} ({t}) à {row['Close']:.2f}€", priority="5")
-            st.session_state.notified_tickers[t] = time.time()
+        # 5. Gestion de la boucle de rafraîchissement
+        refresh_time = (
+            settings.REFRESH_RATES["HIGH_VOLATILITY"] 
+            if market_status['volatility'] > 22 
+            else settings.REFRESH_RATES["LOW_VOLATILITY"]
+        )
 
-# --- AFFICHAGE DES ONGLETS ---
-t_pred, t_radar, t_agenda, t_perf = st.tabs(["🎯 PRÉDICTIONS", "🔭 RADAR", "📅 AGENDA", "📈 PERFORMANCE"])
+        dashboard.render_footer()
 
-with t_pred:
-    st.subheader("Signaux d'Achat Actifs")
-    top_picks = latest[latest["Signal"] == 1]
-    if not top_picks.empty:
-        for _, row in top_picks.iterrows():
-            atr = row.get('ATR', row['Close']*0.02)
-            entry = calculate_dynamic_buy_zone(row['Close'], atr)
-            
-            col_a, col_b = st.columns([1, 1.2])
-            with col_a:
-                st.markdown(f"""
-                <div class="alpha-card">
-                    <h3>{row['Nom']} ({row['Ticker']})</h3>
-                    <div class="buy-zone-highlight">Zone Entrée: {entry:.2f} €</div>
-                    <p>Prix: {row['Close']:.2f}€ | RSI: {row['RSI']:.1f}</p>
-                </div>
-                """, unsafe_allow_html=True)
-            with col_b:
-                news = news_engine.get_news_for_ticker(row['Nom'])
-                for n in news[:2]:
-                    st.markdown(f'<div class="news-item-radar">{n["title"]}</div>', unsafe_allow_html=True)
-    else:
-        st.info("En attente de nouveaux signaux de convergence...")
+        # --- SYSTÈME DE COMPTE À REBOURS ---
+        st.divider()
+        placeholder_timer = st.empty()
+        
+        if st.session_state.data_loader.check_market_hours():
+            for i in range(refresh_time, 0, -1):
+                placeholder_timer.caption(f"🕒 Prochain scan automatique dans {i} secondes (Mode: {sidebar_params['mode']})")
+                time.sleep(1)
+            st.rerun()
+        else:
+            st.info("🌙 Marché fermé. Le scan automatique reprendra à l'ouverture d'Euronext (09:00).")
+            if st.button("🔄 Forcer un rafraîchissement manuel"):
+                st.rerun()
 
-with t_radar:
-    # Radar simplifié basé sur ton code proximity
-    st.subheader("Surveillance des replis sains")
-    radar_df = latest[(latest['RSI'] < 45) & (latest['Close'] > latest['EMA200'])].head(8)
-    cols = st.columns(4)
-    for i, (_, row) in enumerate(radar_df.iterrows()):
-        with cols[i % 4]:
-            st.markdown(f"""
-            <div class="radar-card">
-                <b>{row['Nom']}</b><br>
-                <small>RSI: {row['RSI']:.1f}</small><br>
-                <div style="color:#00ff99">Dist. Zone: {((row['Close']/row['EMA200']-1)*100):.1f}%</div>
-            </div>
-            """, unsafe_allow_html=True)
+    except Exception as e:
+        st.error(f"Erreur critique lors de l'exécution : {str(e)}")
+        logging.error(f"CRITICAL ERROR: {e}", exc_info=True)
 
-with t_agenda:
-    events = agenda_scraper.get_future_events()
-    for ev in events:
-        st.write(f"📅 **{ev['date']}** : {ev['event']} ({ev['impact']})")
-
-with t_perf:
-    # Ici tu peux remettre ton code de backtest complet
-    st.info("Le backtest est mis à jour à chaque cycle de scan complet.")
-
-# LOGIQUE DE REFRESH AUTOMATIQUE
-st.caption(f"Dernière mise à jour : {datetime.now().strftime('%H:%M:%S')}")
-time.sleep(refresh_rate)
-st.rerun()
+if __name__ == "__main__":
+    main()
