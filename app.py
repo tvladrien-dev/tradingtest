@@ -2,91 +2,58 @@ import streamlit as st
 import time
 from engine.trading_bot import TradingBotPEA
 from datetime import datetime
-import os
 
-# Configuration de la page
-st.set_page_config(page_title="ALPHA TERMINAL v2.0", layout="wide")
+st.set_page_config(page_title="ALPHA TERMINAL", layout="wide")
 
-# Injection de CSS pour un look "Terminal Bloomberg"
-st.markdown("""
-    <style>
-    .stApp { background-color: #0e1117; color: #ffffff; }
-    [data-testid="stMetricValue"] { font-size: 1.8rem; color: #00ff99; }
-    </style>
-""", unsafe_allow_html=True)
-
-# Initialisation du bot dans la session
+# Initialisation persistante du bot
 if 'bot' not in st.session_state:
     st.session_state.bot = TradingBotPEA()
-    st.session_state.last_alert_time = {}
+    st.session_state.run = True
 
 bot = st.session_state.bot
 
-st.title("🚀 Alpha PEA : Surveillance Temps Réel 2026")
+st.title("🚀 Alpha PEA - Surveillance Elite 2026")
 
-# --- BARRE LATÉRALE ---
-st.sidebar.header("Paramètres")
-refresh_rate = st.sidebar.slider("Rafraîchissement (sec)", 10, 300, 30)
-enable_notifications = st.sidebar.checkbox("Activer Notifications Bureau", True)
+# Zone d'affichage
+thermo_placeholder = st.empty()
+signals_placeholder = st.empty()
+radar_placeholder = st.empty()
 
-# --- CONTENEURS DYNAMIQUES ---
-status_bar = st.sidebar.empty()
-thermo_col = st.columns(1)[0]
-main_container = st.empty()
-
-# --- BOUCLE DE SURVEILLANCE ---
-while True:
+while st.session_state.run:
     try:
-        # 1. Mise à jour des données
-        with st.spinner('Mise à jour du marché...'):
-            bot.download_data(period="2y", interval="1d") # Pour tes indicateurs quotidiens
-            bot.generate_elite_signals()
-        
-        # 2. Gestion des Notifications
-        new_alerts = bot.check_new_alerts()
-        for alert in new_alerts:
-            alert_id = f"{alert['ticker']}_{alert['type']}"
-            # On ne notifie qu'une fois toutes les 4 heures pour le même ticker
-            if alert_id not in st.session_state.last_alert_time or (time.time() - st.session_state.last_alert_time[alert_id]) > 14400:
-                if enable_notifications:
-                    # Notification Windows/Mac/Linux
-                    os.system(f"msg * 'ALERTE {alert['type']} : {alert['nom']} à {alert['prix']}€'") 
-                st.toast(f"🚨 {alert['type']} sur {alert['nom']}", icon="📈")
-                st.session_state.last_alert_time[alert_id] = time.time()
-
-        # 3. Affichage du Thermomètre
+        # Analyse
+        bot.download_data()
+        bot.generate_elite_signals()
+        last_state = bot.get_last_state()
         stats = bot.get_market_thermometer()
-        with thermo_col:
-            st.info(f"État Global : **{stats['status']}** | Surchauffe : {stats['overbought_pct']:.1f}% | Capitulation : {stats['oversold_pct']:.1f}%")
 
-        # 4. Affichage du Dashboard
-        with main_container.container():
-            last_state = bot.get_last_state()
-            
-            # --- SECTION SIGNAUX ACTIFS ---
-            st.subheader("🟢 Signaux d'Achat Elite")
+        # Thermomètre
+        with thermo_placeholder.container():
+            st.metric("Marché", stats['status'], f"Survente: {stats.get('oversold_pct',0):.1f}%")
+            st.divider()
+
+        # Signaux d'achat
+        with signals_placeholder.container():
+            st.subheader("🎯 Signaux d'Achat Actifs")
             buys = last_state[last_state['Signal'] == 1]
             if not buys.empty:
-                cols = st.columns(len(buys) if len(buys) < 4 else 4)
+                cols = st.columns(3)
                 for i, (_, row) in enumerate(buys.iterrows()):
-                    with cols[i % 4]:
-                        st.markdown(row['Alpha_HTML'], unsafe_allow_html=True)
-            else:
-                st.write("Aucun signal immédiat. Analyse en cours...")
+                    with cols[i % 3]: st.markdown(row['Alpha_HTML'], unsafe_allow_html=True)
+            else: st.info("Recherche de signaux Alpha...")
 
-            # --- SECTION RADAR ---
-            st.divider()
-            st.subheader("🔍 Radar de Proximité (Actions saines en correction)")
-            proximity = bot.get_proximity_scan().head(8)
-            prox_cols = st.columns(4)
+        # Radar (Tendance haussière + correction RSI)
+        with radar_placeholder.container():
+            st.subheader("🔍 Radar de Proximité")
+            proximity = last_state[(last_state['RSI'] < 45) & (last_state['Close'] > last_state['EMA200'])].sort_values('RSI').head(6)
+            cols = st.columns(3)
             for i, (_, row) in enumerate(proximity.iterrows()):
-                with prox_cols[i % 4]:
-                    st.markdown(f"**{row['Nom']}**")
-                    st.markdown(row['Alpha_HTML'], unsafe_allow_html=True)
+                with cols[i % 3]: st.markdown(f"**{row['Nom']}**\n{row['Alpha_HTML']}", unsafe_allow_html=True)
 
-        status_bar.write(f"Dernier Scan : {datetime.now().strftime('%H:%M:%S')}")
-        
+        st.sidebar.write(f"Dernière MAJ: {datetime.now().strftime('%H:%M:%S')}")
+        time.sleep(60) # Rafraîchissement automatique chaque minute
+        st.rerun() # Relance le script pour l'effet temps réel
+
     except Exception as e:
-        st.error(f"Erreur de mise à jour : {e}")
-    
-    time.sleep(refresh_rate)
+        st.error(f"Erreur flux: {e}")
+        time.sleep(10)
