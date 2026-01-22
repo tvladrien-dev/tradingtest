@@ -1,132 +1,129 @@
-import streamlit as st
-import pandas as pd
+import requests
+from bs4 import BeautifulSoup
+import logging
 from datetime import datetime
-from ui.components import UIComponents
 
-class Dashboard:
+class NewsEngine:
     """
-    Orchestrateur de l'interface utilisateur Alpha Quant.
-    Gère la mise en page, les onglets et la sécurité des données affichées.
+    Moteur de communication et d'intelligence externe.
+    Gère les notifications push via ntfy.sh et le flux d'actualités Yahoo Finance.
     """
-    def __init__(self, settings):
-        self.settings = settings
-        self.ui = UIComponents()
+    
+    def __init__(self):
+        """Initialise les paramètres de connexion et headers."""
+        self.headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        self.base_url = "https://finance.yahoo.com/quote/"
 
-    def render_sidebar(self):
-        """Rendu de la barre latérale avec contrôles utilisateur."""
-        with st.sidebar:
-            st.markdown("### 🛠️ PANNEAU DE CONTRÔLE")
-            st.divider()
+    def get_news_for_ticker(self, ticker):
+        """
+        Scrape les dernières actualités pour un ticker spécifique sur Yahoo Finance.
+        """
+        news_list = []
+        try:
+            # Nettoyage du format ticker pour l'URL
+            clean_ticker = ticker.strip().upper()
+            url = f"{self.base_url}{clean_ticker}"
             
-            scan_mode = st.selectbox(
-                "Mode de Scan", 
-                ["⚡ Temps Réel (60s)", "🛡️ Prudent (5min)", "💤 Veille"],
-                index=0
-            )
+            response = requests.get(url, headers=self.headers, timeout=10)
+            if response.status_code != 200:
+                logging.warning(f"Impossible de récupérer les news pour {ticker} (Code: {response.status_code})")
+                return []
+
+            soup = BeautifulSoup(response.text, 'html.parser')
             
-            search_query = st.text_input("🔍 Rechercher un Ticker", "").upper()
+            # Ciblage des éléments de flux d'actualités Yahoo
+            articles = soup.find_all('li', {'class': 'stream-item'})
             
-            st.divider()
-            st.markdown("### 📊 STATUT SYSTÈME")
-            st.success("Connexion Euronext : OK")
-            st.info(f"Version Bot : {self.settings.VERSION}")
-            
-            return {"mode": scan_mode, "search": search_query}
-
-    def render_main_view(self, market_status, signals_df, news_engine):
-        """Génère l'interface principale organisée en onglets."""
-        
-        # 1. En-tête avec métriques macro
-        self.ui.header_component(market_status)
-        st.divider()
-
-        # 2. Structure par onglets
-        tab_signals, tab_analysis, tab_news = st.tabs([
-            "🎯 SIGNAUX ALPHA", 
-            "📈 ANALYSE TECHNIQUE", 
-            "📰 FLUX ACTUALITÉS"
-        ])
-
-        # --- ONGLET 1 : SIGNAUX D'ACHAT ---
-        with tab_signals:
-            if signals_df is None or signals_df.empty:
-                st.warning("Aucune donnée disponible. Attente du prochain flux...")
-            else:
-                # Filtrage des signaux d'achat (Signal == 1)
-                buy_signals = signals_df[signals_df['Signal'] == 1]
+            for item in articles[:5]:
+                title_tag = item.find('h3')
+                link_tag = item.find('a')
                 
-                if buy_signals.empty:
-                    st.info("💡 Aucun signal d'achat détecté. Le marché est en phase d'observation.")
-                else:
-                    st.subheader(f"Opportunités détectées ({len(buy_signals)})")
-                    # On affiche les cartes de signaux
-                    for _, row in buy_signals.iterrows():
-                        self.ui.signal_card(
-                            ticker=row.get('Ticker', 'N/A'),
-                            price=row.get('Close', 0.0),
-                            change=row.get('Change', 0.0),
-                            rsi=row.get('RSI', 0.0),
-                            signal_type="ACHAT"
-                        )
-
-        # --- ONGLET 2 : ANALYSE TECHNIQUE DÉTAILLÉE ---
-        with tab_analysis:
-            if signals_df is not None and not signals_df.empty:
-                # Menu de sélection de l'actif
-                available_tickers = sorted(signals_df['Ticker'].unique())
-                selected_ticker = st.selectbox("Choisir un actif à analyser", available_tickers)
-                
-                # Extraction sécurisée de la ligne de données
-                ticker_row = signals_df[signals_df['Ticker'] == selected_ticker].iloc[0]
-                
-                col_chart, col_metrics = st.columns([3, 1])
-                
-                with col_chart:
-                    # Rendu du graphique via components.py
-                    # Note : ticker_row est transformé en DataFrame pour le graphique
-                    chart_df = pd.DataFrame([ticker_row]) 
-                    fig = self.ui.create_candlestick_chart(chart_df, selected_ticker)
-                    if fig:
-                        st.plotly_chart(fig, width='stretch')
-                    else:
-                        st.error("Impossible de générer le graphique pour cet actif.")
-                
-                with col_metrics:
-                    st.markdown("#### ⚡ Métriques Clés")
-                    # Utilisation de .get() pour éviter tout crash si une colonne manque
-                    st.metric("RSI (14)", f"{ticker_row.get('RSI', 'N/A')}")
-                    st.metric("Dist. EMA200", f"{ticker_row.get('Dist_EMA200', 'N/A')}%")
-                    st.metric("ATR (Volatilité)", f"{ticker_row.get('ATR', 'N/A')}")
+                if title_tag and link_tag:
+                    link = link_tag['href']
+                    full_link = link if link.startswith('http') else f"https://finance.yahoo.com{link}"
                     
-                    status_color = "green" if ticker_row.get('Signal') == 1 else "gray"
-                    st.markdown(f"**Statut :** :{status_color}[{ticker_row.get('Status', 'NEUTRE')}]")
+                    news_list.append({
+                        "title": title_tag.text.strip(),
+                        "link": full_link,
+                        "source": "Yahoo Finance",
+                        "date": datetime.now().strftime("%H:%M")
+                    })
+            
+            return news_list
+
+        except Exception as e:
+            logging.error(f"Erreur lors du scraping des news pour {ticker} : {e}")
+            return []
+
+    def send_ntfy_alert(self, signal_data, topic):
+        """
+        Envoie une notification push ultra-détaillée via ntfy.sh.
+        Inclus : Prix d'achat, Objectifs de vente, Stop Loss et Justification technique.
+        """
+        if not topic:
+            logging.error("Échec notification : NTFY_TOPIC n'est pas configuré.")
+            return False
+
+        try:
+            # Extraction sécurisée des données du signal
+            ticker = signal_data.get('Ticker', 'Inconnu')
+            price = signal_data.get('Close', 0.0)
+            rsi = signal_data.get('RSI', 0.0)
+            ema200 = signal_data.get('EMA200', 0.0)
+            
+            # --- CALCUL DES OBJECTIFS DE TRADING (GESTION DU RISQUE) ---
+            # Objectif de gain (Take Profit) : +15%
+            # Protection (Stop Loss) : -5%
+            take_profit = round(price * 1.15, 2)
+            stop_loss = round(price * 0.95, 2)
+            potential_gain = "15.0%"
+
+            # --- MISE EN FORME DU MESSAGE NTFY ---
+            title = f"🎯 SIGNAL ALPHA DÉTECTÉ : {ticker}"
+            
+            message = (
+                f"📊 ANALYSE QUANTITATIVE TERMINÉE\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"🔹 ACTIF : {ticker}\n"
+                f"🔹 PRIX D'ENTRÉE : {price} €\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"💰 OBJECTIFS DE SORTIE :\n"
+                f"  └ 🚀 VENTE (Target) : {take_profit} €\n"
+                f"  └ 📉 STOP LOSS : {stop_loss} €\n"
+                f"  └ 📈 GAIN ESTIMÉ : +{potential_gain}\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"🔍 INDICATEURS CLÉS :\n"
+                f"  • RSI(14) : {round(rsi, 2)} (Zone Rebond)\n"
+                f"  • Support EMA200 : {round(ema200, 2)} €\n"
+                f"  • Tendance : BULLISH CONFIRMÉE\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"⏰ {datetime.now().strftime('%d/%m/%Y à %H:%M:%S')}"
+            )
+
+            # --- ENVOI DE LA REQUÊTE HTTP POST ---
+            url = f"https://ntfy.sh/{topic}"
+            
+            response = requests.post(
+                url,
+                data=message.encode('utf-8'),
+                headers={
+                    "Title": title,
+                    "Priority": "5", # Priorité Urgente (déclenche sonnerie/vibreur)
+                    "Tags": "rocket,money_with_wings,chart_with_upwards_trend",
+                    "Click": f"https://finance.yahoo.com/quote/{ticker}" # Ouvre la fiche action au clic
+                },
+                timeout=10
+            )
+
+            if response.status_code == 200:
+                logging.info(f"Notification ntfy envoyée avec succès pour {ticker}.")
+                return True
             else:
-                st.info("Veuillez attendre la fin du premier scan pour l'analyse détaillée.")
+                logging.error(f"Erreur ntfy (Status: {response.status_code})")
+                return False
 
-        # --- ONGLET 3 : ACTUALITÉS ET SENTIMENT ---
-        with tab_news:
-            st.subheader("Dernières Actualités Marché")
-            try:
-                # Récupération des news macro (CAC 40 par défaut)
-                news_items = news_engine.get_news_for_ticker("CAC 40")
-                if news_items:
-                    for item in news_items[:8]: # Top 8 news
-                        with st.expander(f"{item['title']}"):
-                            st.write(f"**Source :** {item['source']}")
-                            st.write(f"**Date :** {item['date']}")
-                            st.link_button("Lire l'article", item['link'])
-                else:
-                    st.write("Aucune actualité récente trouvée.")
-            except Exception as e:
-                st.error(f"Erreur de chargement du flux news : {e}")
-
-    def render_footer(self):
-        """Pied de page avec avertissements légaux."""
-        st.divider()
-        footer_cols = st.columns([3, 1])
-        with footer_cols[0]:
-            st.caption("© 2026 Alpha Quant PEA Engine - Terminal Professionnel.")
-            st.caption("Avertissement : Les performances passées ne préjugent pas des performances futures. Risque de perte en capital.")
-        with footer_cols[1]:
-            if st.button("🔄 Refresh"):
-                st.rerun()
+        except Exception as e:
+            logging.error(f"Erreur critique lors de l'envoi de l'alerte ntfy : {e}")
+            return False
