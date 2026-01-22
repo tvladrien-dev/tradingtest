@@ -5,115 +5,128 @@ from ui.components import UIComponents
 
 class Dashboard:
     """
-    Orchestrateur de l'interface utilisateur.
-    Gère la disposition des panneaux, les onglets et les interactions utilisateur.
+    Orchestrateur de l'interface utilisateur Alpha Quant.
+    Gère la mise en page, les onglets et la sécurité des données affichées.
     """
     def __init__(self, settings):
         self.settings = settings
         self.ui = UIComponents()
 
     def render_sidebar(self):
-        """Affiche les contrôles de configuration dans la barre latérale."""
+        """Rendu de la barre latérale avec contrôles utilisateur."""
         with st.sidebar:
-            st.image("https://cdn-icons-png.flaticon.com/512/2502/2502543.png", width=80)
-            st.title("Configuration")
+            st.markdown("### 🛠️ PANNEAU DE CONTRÔLE")
             st.divider()
             
-            # Filtres globaux
-            st.subheader("⚙️ Paramètres de Scan")
-            scan_mode = st.radio("Fréquence", ["⚡ Temps Réel", "🛡️ Prudent", "💤 Veille"])
+            scan_mode = st.selectbox(
+                "Mode de Scan", 
+                ["⚡ Temps Réel (60s)", "🛡️ Prudent (5min)", "💤 Veille"],
+                index=0
+            )
             
-            st.subheader("🔍 Filtrage Actifs")
-            search = st.text_input("Rechercher un ticker (ex: TTE.PA)")
+            search_query = st.text_input("🔍 Rechercher un Ticker", "").upper()
             
             st.divider()
-            st.info(f"Version: {self.settings.VERSION}\nBot actif sur Euronext Paris")
+            st.markdown("### 📊 STATUT SYSTÈME")
+            st.success("Connexion Euronext : OK")
+            st.info(f"Version Bot : {self.settings.VERSION}")
             
-            return {"mode": scan_mode, "search": search}
+            return {"mode": scan_mode, "search": search_query}
 
     def render_main_view(self, market_status, signals_df, news_engine):
-        """Génère la vue principale avec le système d'onglets."""
+        """Génère l'interface principale organisée en onglets."""
         
-        # 1. En-tête Dynamique
+        # 1. En-tête avec métriques macro
         self.ui.header_component(market_status)
         st.divider()
 
-        # 2. Système d'onglets (Navigation principale)
-        tab1, tab2, tab3, tab4 = st.tabs([
-            "🎯 PRÉDICTIONS ALPHA", 
+        # 2. Structure par onglets
+        tab_signals, tab_analysis, tab_news = st.tabs([
+            "🎯 SIGNAUX ALPHA", 
             "📈 ANALYSE TECHNIQUE", 
-            "📊 BACKTEST PERFORMANCE",
-            "📅 TIMELINE & NEWS"
+            "📰 FLUX ACTUALITÉS"
         ])
 
         # --- ONGLET 1 : SIGNAUX D'ACHAT ---
-        with tab1:
-            st.subheader("Signaux d'achat détectés (Top Alphas)")
-            buy_signals = signals_df[signals_df['Signal'] == 1]
-            
-            if buy_signals.empty:
-                st.warning("Aucun signal d'achat clair pour le moment. Le marché est sous surveillance.")
+        with tab_signals:
+            if signals_df is None or signals_df.empty:
+                st.warning("Aucune donnée disponible. Attente du prochain flux...")
             else:
-                for idx, row in buy_signals.iterrows():
-                    self.ui.signal_card(
-                        ticker=row['Ticker'],
-                        price=row['Close'],
-                        change=row['Change'],
-                        rsi=row['RSI'],
-                        signal_type="ACHAT"
-                    )
+                # Filtrage des signaux d'achat (Signal == 1)
+                buy_signals = signals_df[signals_df['Signal'] == 1]
+                
+                if buy_signals.empty:
+                    st.info("💡 Aucun signal d'achat détecté. Le marché est en phase d'observation.")
+                else:
+                    st.subheader(f"Opportunités détectées ({len(buy_signals)})")
+                    # On affiche les cartes de signaux
+                    for _, row in buy_signals.iterrows():
+                        self.ui.signal_card(
+                            ticker=row.get('Ticker', 'N/A'),
+                            price=row.get('Close', 0.0),
+                            change=row.get('Change', 0.0),
+                            rsi=row.get('RSI', 0.0),
+                            signal_type="ACHAT"
+                        )
 
-        # --- ONGLET 2 : ANALYSE DÉTAILLÉE ---
-        with tab2:
-            selected_ticker = st.selectbox("Sélectionner un actif pour analyse profonde", signals_df['Ticker'].unique())
-            ticker_data = signals_df[signals_df['Ticker'] == selected_ticker]
-            
-            col_chart, col_info = st.columns([3, 1])
-            
-            with col_chart:
-                # On suppose ici que ticker_data contient l'historique nécessaire pour le graphique
-                # Dans l'implémentation réelle, on passerait le DF historique complet
-                st.plotly_chart(self.ui.create_candlestick_chart(ticker_data, selected_ticker), use_container_width=True)
-            
-            with col_info:
-                st.markdown("### Metrics Clés")
-                st.json({
-                    "RSI (14)": round(ticker_data['RSI'].iloc[-1], 2),
-                    "Distance EMA200": f"{ticker_data['Dist_EMA200'].iloc[-1]:.2f}%",
-                    "Statut Volatilité": "Élevé" if ticker_data['ATR'].iloc[-1] > 2 else "Faible"
-                })
+        # --- ONGLET 2 : ANALYSE TECHNIQUE DÉTAILLÉE ---
+        with tab_analysis:
+            if signals_df is not None and not signals_df.empty:
+                # Menu de sélection de l'actif
+                available_tickers = sorted(signals_df['Ticker'].unique())
+                selected_ticker = st.selectbox("Choisir un actif à analyser", available_tickers)
+                
+                # Extraction sécurisée de la ligne de données
+                ticker_row = signals_df[signals_df['Ticker'] == selected_ticker].iloc[0]
+                
+                col_chart, col_metrics = st.columns([3, 1])
+                
+                with col_chart:
+                    # Rendu du graphique via components.py
+                    # Note : ticker_row est transformé en DataFrame pour le graphique
+                    chart_df = pd.DataFrame([ticker_row]) 
+                    fig = self.ui.create_candlestick_chart(chart_df, selected_ticker)
+                    if fig:
+                        st.plotly_chart(fig, width='stretch')
+                    else:
+                        st.error("Impossible de générer le graphique pour cet actif.")
+                
+                with col_metrics:
+                    st.markdown("#### ⚡ Métriques Clés")
+                    # Utilisation de .get() pour éviter tout crash si une colonne manque
+                    st.metric("RSI (14)", f"{ticker_row.get('RSI', 'N/A')}")
+                    st.metric("Dist. EMA200", f"{ticker_row.get('Dist_EMA200', 'N/A')}%")
+                    st.metric("ATR (Volatilité)", f"{ticker_row.get('ATR', 'N/A')}")
+                    
+                    status_color = "green" if ticker_row.get('Signal') == 1 else "gray"
+                    st.markdown(f"**Statut :** :{status_color}[{ticker_row.get('Status', 'NEUTRE')}]")
+            else:
+                st.info("Veuillez attendre la fin du premier scan pour l'analyse détaillée.")
 
-        # --- ONGLET 3 : PERFORMANCE ---
-        with tab3:
-            st.subheader("Résultats de la stratégie (Simulation 1 an)")
-            # Ces données viendraient normalement du Backtester
-            mock_metrics = {
-                "TotalReturn": 0.245,
-                "SharpeRatio": 1.82,
-                "MaxDrawdown": -0.12,
-                "FinalValue": 31125.00
-            }
-            self.ui.performance_dashboard(mock_metrics)
-            
-            # Graphique de la courbe d'équité (Equity Curve)
-            st.line_chart(pd.DataFrame({"Equity": [25000, 26000, 25500, 28000, 31125]}))
+        # --- ONGLET 3 : ACTUALITÉS ET SENTIMENT ---
+        with tab_news:
+            st.subheader("Dernières Actualités Marché")
+            try:
+                # Récupération des news macro (CAC 40 par défaut)
+                news_items = news_engine.get_news_for_ticker("CAC 40")
+                if news_items:
+                    for item in news_items[:8]: # Top 8 news
+                        with st.expander(f"{item['title']}"):
+                            st.write(f"**Source :** {item['source']}")
+                            st.write(f"**Date :** {item['date']}")
+                            st.link_button("Lire l'article", item['link'])
+                else:
+                    st.write("Aucune actualité récente trouvée.")
+            except Exception as e:
+                st.error(f"Erreur de chargement du flux news : {e}")
 
-        # --- ONGLET 4 : ACTUALITÉS ---
-        with tab4:
-            st.subheader("Flux d'actualités et Sentiment")
-            macro_sentiment = news_engine.get_macro_sentiment()
-            st.metric("Sentiment Global Marché", macro_sentiment)
-            
-            st.divider()
-            # Affichage des news pour le CAC 40
-            news_items = news_engine.get_news_for_ticker("CAC 40")
-            for item in news_items:
-                with st.expander(f"{item['date']} - {item['title']} ({item['source']})"):
-                    st.write(f"Source: {item['source']}")
-                    st.link_button("Lire l'article", item['link'])
-
-    @staticmethod
-    def render_footer():
-        """Pied de page avec informations légales."""
+    def render_footer(self):
+        """Pied de page avec avertissements légaux."""
         st.divider()
-        st.caption("Avertissement : Le trading comporte des risques. Ce bot est un outil d'aide à la décision et non un conseil financier.")
+        footer_cols = st.columns([3, 1])
+        with footer_cols[0]:
+            st.caption("© 2026 Alpha Quant PEA Engine - Terminal Professionnel.")
+            st.caption("Avertissement : Les performances passées ne préjugent pas des performances futures. Risque de perte en capital.")
+        with footer_cols[1]:
+            if st.button("🔄 Refresh"):
+                st.rerun()
