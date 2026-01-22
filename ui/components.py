@@ -6,40 +6,42 @@ from datetime import datetime
 
 class UIComponents:
     """
-    Bibliothèque de composants graphiques haute performance pour l'interface Quant.
-    Optimisé pour le rendu Dark Mode et la lisibilité des données financières.
+    Bibliothèque de composants graphiques pour le Terminal Quant.
+    Gère le rendu visuel, les graphiques techniques et les styles CSS.
     """
     
     @staticmethod
     def set_page_config():
-        """Initialise le style global de la page."""
+        """Initialise la configuration système et le style Matrix/Dark."""
         st.set_page_config(
-            page_title="QUANT MASTER | Terminal",
+            page_title="ALPHA QUANT | Terminal",
             page_icon="⚡",
             layout="wide",
-            initial_sidebar_state="collapsed"
+            initial_sidebar_state="expanded"
         )
         
-        # Injection de CSS personnalisé pour le look "Bloomberg / Matrix"
+        # Injection CSS pour un look institutionnel (Bloomberg Dark)
         st.markdown("""
             <style>
             .stApp { background-color: #0E1117; }
-            .metric-card {
+            [data-testid="stMetricValue"] { font-family: 'Courier New', monospace; font-size: 28px !important; }
+            .stTabs [data-baseweb="tab-list"] { gap: 10px; }
+            .stTabs [data-baseweb="tab"] {
                 background-color: #161B22;
-                border: 1px solid #30363D;
-                padding: 20px;
-                border-radius: 10px;
-                color: white;
+                border-radius: 5px 5px 0px 0px;
+                padding: 10px 20px;
+                color: #8B949E;
             }
-            .status-up { color: #00FF41; font-weight: bold; }
-            .status-down { color: #FF3131; font-weight: bold; }
-            .price-text { font-family: 'Courier New', Courier, monospace; font-size: 24px; }
+            .stTabs [aria-selected="true"] {
+                background-color: #1F6FEB !important;
+                color: white !important;
+            }
             </style>
         """, unsafe_allow_html=True)
 
     @staticmethod
     def header_component(market_status):
-        """Affiche la barre de statut supérieure avec l'état du régime de marché."""
+        """Barre d'état supérieure dynamique."""
         cols = st.columns([2, 1, 1, 1])
         
         with cols[0]:
@@ -47,57 +49,78 @@ class UIComponents:
             st.caption(f"Dernière synchronisation flux : {datetime.now().strftime('%H:%M:%S')}")
             
         with cols[1]:
-            color = "#00FF41" if "BULLISH" in market_status['status'] else "#FF3131"
+            color = "normal" if "BULLISH" in market_status['status'] else "inverse"
             st.metric("RÉGIME MARCHÉ", market_status['status'], 
-                      delta=f"{market_status['dist_ema_200']}% (EMA200)",
-                      delta_color="normal")
+                      delta=f"{market_status['dist_ema_200']}% / EMA200",
+                      delta_color=color)
             
         with cols[2]:
-            st.metric("VOLATILITÉ RÉALISÉE", f"{market_status['volatility']}%", 
-                      delta="STABLE" if market_status['volatility'] < 22 else "STRESS",
+            st.metric("VOLATILITÉ", f"{market_status['volatility']}%", 
+                      delta="RISQUE ÉLEVÉ" if market_status['volatility'] > 22 else "STABLE",
                       delta_color="inverse")
             
         with cols[3]:
-            st.metric("ALLOCATION MAX", f"{int(market_status['multiplier'] * 100)}%", help="Basé sur le filtre de régime macro")
+            st.metric("LEVIER CONSEILLÉ", f"x{market_status['multiplier']}")
 
     @staticmethod
     def create_candlestick_chart(df, ticker_name):
         """
-        Génère un graphique en chandeliers avec indicateurs techniques (EMA, Bandes de Bollinger).
+        Génère un graphique technique professionnel.
+        Sécurisé contre les colonnes manquantes ou mal nommées.
         """
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
-                           vertical_spacing=0.03, subplot_titles=(f'Cours {ticker_name}', 'RSI (14)'), 
-                           row_width=[0.3, 0.7])
+        if df is None or df.empty:
+            st.warning(f"Données graphiques indisponibles pour {ticker_name}")
+            return None
 
-        # Candlestick
-        fig.add_trace(go.Candlestick(
-            x=df.index, open=df['Open'], high=df['High'],
-            low=df['Low'], close=df['Close'], name='Prix'
-        ), row=1, col=1)
+        # --- NORMALISATION DES COLONNES ---
+        # On force la première lettre en majuscule pour correspondre aux attentes de Plotly
+        df.columns = [str(c).capitalize() for c in df.columns]
 
-        # Moyennes Mobiles
-        if 'EMA20' in df.columns:
-            fig.add_trace(go.Scatter(x=df.index, y=df['EMA20'], line=dict(color='#00FFFF', width=1), name='EMA 20'), row=1, col=1)
-        if 'EMA200' in df.columns:
-            fig.add_trace(go.Scatter(x=df.index, y=df['EMA200'], line=dict(color='#FFD700', width=2), name='EMA 200'), row=1, col=1)
+        # Création de la figure avec 2 lignes (Prix + RSI)
+        fig = make_subplots(
+            rows=2, cols=1, 
+            shared_xaxes=True, 
+            vertical_spacing=0.05, 
+            subplot_titles=(f'Analyse Technique : {ticker_name}', 'RSI (14)'),
+            row_heights=[0.7, 0.3]
+        )
 
-        # Bandes de Bollinger
-        if 'BB_High' in df.columns:
-            fig.add_trace(go.Scatter(x=df.index, y=df['BB_High'], line=dict(dash='dash', color='rgba(255,255,255,0.2)'), name='BB High'), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=df['BB_Low'], line=dict(dash='dash', color='rgba(255,255,255,0.2)'), fill='tonexty', name='BB Low'), row=1, col=1)
+        # 1. TRACÉ DES CHANDELIERS (OU COURBE DE CLÔTURE)
+        ohlc_cols = ['Open', 'High', 'Low', 'Close']
+        if all(col in df.columns for col in ohlc_cols):
+            fig.add_trace(go.Candlestick(
+                x=df.index, open=df['Open'], high=df['High'],
+                low=df['Low'], close=df['Close'], name='OHLC'
+            ), row=1, col=1)
+        else:
+            fig.add_trace(go.Scatter(x=df.index, y=df['Close'], line=dict(color='#1F6FEB'), name='Prix Clôture'), row=1, col=1)
 
-        # RSI
-        if 'RSI' in df.columns:
-            fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='#ADFF2F', width=2), name='RSI'), row=2, col=1)
-            # Lignes de seuils RSI
-            fig.add_hline(y=70, line_dash="dot", row=2, col=1, line_color="red")
-            fig.add_hline(y=30, line_dash="dot", row=2, col=1, line_color="green")
+        # 2. MOYENNE MOBILE 200 (EMA200)
+        if 'Ema200' in df.columns:
+            fig.add_trace(go.Scatter(
+                x=df.index, y=df['Ema200'], 
+                line=dict(color='#FFD700', width=1.5), 
+                name='Moyenne 200J'
+            ), row=1, col=1)
 
+        # 3. RSI
+        if 'Rsi' in df.columns:
+            fig.add_trace(go.Scatter(
+                x=df.index, y=df['Rsi'], 
+                line=dict(color='#ADFF2F', width=2), 
+                name='RSI'
+            ), row=2, col=1)
+            # Seuils RSI
+            fig.add_hline(y=70, line_dash="dot", row=2, col=1, line_color="#FF3131")
+            fig.add_hline(y=30, line_dash="dot", row=2, col=1, line_color="#00FF41")
+
+        # Mise en forme Cosmétique
         fig.update_layout(
             height=600,
             template="plotly_dark",
             xaxis_rangeslider_visible=False,
-            margin=dict(l=10, r=10, t=30, b=10),
+            margin=dict(l=10, r=10, t=50, b=10),
+            showlegend=True,
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
         
@@ -105,26 +128,32 @@ class UIComponents:
 
     @staticmethod
     def signal_card(ticker, price, change, rsi, signal_type):
-        """Affiche une carte de signal d'achat/vente stylisée."""
-        with st.container():
-            col1, col2, col3 = st.columns([1, 2, 1])
-            
-            with col1:
-                st.subheader(ticker)
-                
-            with col2:
-                color = "#00FF41" if signal_type == "ACHAT" else "#FF3131"
-                st.markdown(f"<h2 style='color: {color}; margin:0;'>{signal_type}</h2>", unsafe_allow_html=True)
-                st.caption(f"RSI: {rsi:.2f} | Prix: {price:.2f}€")
-                
-            with col3:
-                st.metric("Var.", f"{change:.2f}%")
+        """Affiche une alerte de trading stylisée."""
+        color = "#00FF41" if signal_type == "ACHAT" else "#FF3131"
+        
+        st.markdown(f"""
+            <div style="border: 1px solid #30363D; border-radius: 10px; padding: 15px; margin-bottom: 10px; background-color: #161B22;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <span style="font-size: 20px; font-weight: bold; color: white;">{ticker}</span><br>
+                        <span style="color: #8B949E;">Prix: {price}€</span>
+                    </div>
+                    <div style="text-align: right;">
+                        <span style="color: {color}; font-size: 22px; font-weight: bold;">{signal_type}</span><br>
+                        <span style="color: {'#00FF41' if change >= 0 else '#FF3131'};">{change}%</span>
+                    </div>
+                </div>
+                <div style="margin-top: 10px; font-size: 12px; color: #8B949E; border-top: 1px solid #30363D; padding-top: 5px;">
+                    RSI: {rsi} | Indicateur: Alpha Convergence v12
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
 
     @staticmethod
     def performance_dashboard(metrics):
-        """Affiche le résumé du backtest sous forme de tableau de bord financier."""
+        """Panneau de statistiques de backtest."""
         cols = st.columns(4)
-        cols[0].metric("Rendement Total", f"{metrics['TotalReturn']:.2%}")
-        cols[1].metric("Ratio de Sharpe", f"{metrics['SharpeRatio']:.2f}")
-        cols[2].metric("Max Drawdown", f"{metrics['MaxDrawdown']:.2%}", delta_color="inverse")
-        cols[3].metric("Valeur Finale", f"{metrics['FinalValue']:.2f} €")
+        cols[0].metric("Performance", f"{metrics['TotalReturn']:.2%}")
+        cols[1].metric("Ratio Sharpe", f"{metrics['SharpeRatio']:.2f}")
+        cols[2].metric("Drawdown Max", f"{metrics['MaxDrawdown']:.2%}", delta_color="inverse")
+        cols[3].metric("Capital Final", f"{metrics['FinalValue']:.0f} €")
