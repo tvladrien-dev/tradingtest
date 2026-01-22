@@ -1,86 +1,118 @@
 import pandas as pd
 import numpy as np
+import ta
 import logging
 
 class TradingBotPEA:
     """
-    Moteur de décision Alpha pour le PEA (Alpha Convergence 2026).
-    Analyse les indicateurs techniques calculés par le DataLoader et 
-    génère des signaux d'achat basés sur la convergence Tendance/Momentum.
+    Moteur de trading Alpha Quant v2.5.
+    Logique : Tendance EMA200 + RSI Accumulation + Confirmation MACD + Volatilité ATR.
     """
+    
     def __init__(self):
-        self.strategy_name = "Alpha Convergence"
-        self.version = "12.5.0"
-        # Seuils internes pour la validation du signal
-        self.rsi_oversold = 35
-        self.rsi_neutral = 50
+        self.logger = logging.getLogger("TradingBot")
 
     def analyze(self, ticker, df):
         """
-        Analyse les séries temporelles pour détecter une anomalie statistique positive.
-        Retourne un dictionnaire contenant le signal et les métriques de décision.
+        Analyse un actif selon la stratégie combinée pour PEA :
+        1. Tendance : Prix > EMA 200 (Condition Sine Qua Non)
+        2. Momentum : RSI entre 30 et 55 (Pas de surachat, potentiel de hausse)
+        3. Cycle : MACD > Ligne de Signal (Confirmation de l'impulsion)
+        4. Risque : Mesure de l'ATR pour le dimensionnement
         """
         try:
-            # Sécurité : On vérifie que le DataFrame contient assez de données
-            # Il faut au moins 200 jours pour que la EMA200 soit valide
+            # Vérification de la profondeur historique pour l'EMA 200
             if df is None or len(df) < 200:
-                logging.warning(f"Données insuffisantes pour {ticker} ({len(df) if df is not None else 0}/200 jours)")
+                self.logger.warning(f"Historique insuffisant pour {ticker} ({len(df) if df is not None else 0} jours)")
                 return None
 
-            # On récupère les deux dernières lignes pour détecter les croisements
-            last_row = df.iloc[-1]
-            prev_row = df.iloc[-2]
+            # --- 1. CALCUL DES INDICATEURS (BIBLIOTHÈQUE TA) ---
             
-            # --- LOGIQUE DE DÉTECTION ALPHA ---
+            # TENDANCE : Moyenne Mobile Exponentielle 200 jours
+            df['EMA200'] = ta.trend.ema_indicator(df['Close'], window=200)
             
-            # 1. Filtre de Tendance Long Terme (Structure de Marché)
-            # Le prix doit être au-dessus de la moyenne mobile 200 (Biais haussier institutionnel)
-            is_bullish_trend = last_row['Close'] > last_row['EMA200']
+            # MOMENTUM : Relative Strength Index 14 jours
+            df['RSI'] = ta.momentum.rsi(df['Close'], window=14)
             
-            # 2. Signal de Momentum (Croisement de Moyennes Mobiles)
-            # La moyenne rapide (20) passe au-dessus de la moyenne lente (50)
-            is_momentum_positive = last_row['EMA20'] > last_row['EMA50']
+            # CYCLE : MACD (Moving Average Convergence Divergence)
+            macd_obj = ta.trend.MACD(
+                df['Close'], 
+                window_slow=26, 
+                window_fast=12, 
+                window_sign=9
+            )
+            df['MACD'] = macd_obj.macd()
+            df['MACD_Signal'] = macd_obj.macd_signal()
+            df['MACD_Diff'] = macd_obj.macd_diff() # Histogramme
             
-            # 3. Signal de Retournement RSI (Mean Reversion)
-            # On cherche une sortie de zone de survente (le RSI repasse au-dessus de 35)
-            # OU un RSI qui reste sain (< 60) pendant une poussée de prix
-            rsi_rebound = prev_row['RSI'] < self.rsi_oversold and last_row['RSI'] > self.rsi_oversold
-            
-            # 4. Filtre de Volatilité (ATR)
-            # On évite d'entrer si la bougie actuelle est anormalement explosive (risque de mèche)
-            is_volatility_stable = last_row['Close'] < (last_row['BB_High'] * 1.01)
+            # VOLATILITÉ : Average True Range (Pour les futures limites de Stop/Profit)
+            df['ATR'] = ta.volatility.average_true_range(
+                df['High'], 
+                df['Low'], 
+                df['Close'], 
+                window=14
+            )
 
-            # --- GÉNÉRATION DU SIGNAL FINAL ---
-            # Un signal d'achat (1) est généré si :
-            # (Tendance Haussière ET Rebond RSI) OU (Tendance Haussière ET Momentum Confirmé)
+            # --- 2. EXTRACTION DES DONNÉES DE DÉCISION ---
+            
+            last_close = df['Close'].iloc[-1]
+            last_ema200 = df['EMA200'].iloc[-1]
+            last_rsi = df['RSI'].iloc[-1]
+            last_macd = df['MACD'].iloc[-1]
+            last_macd_sig = df['MACD_Signal'].iloc[-1]
+            last_atr = df['ATR'].iloc[-1]
+            
+            # Calcul de la distance à l'EMA 200
+            dist_ema = ((last_close / last_ema200) - 1) * 100
+
+            # --- 3. LOGIQUE DE FILTRAGE ET SIGNAL ---
+            
+            # RÈGLE 1 : Tendance de fond (On n'achète que ce qui monte à long terme)
+            is_bullish_trend = last_close > last_ema200
+            
+            # RÈGLE 2 : Zone de prix saine (RSI entre 30 et 55)
+            # On évite le surachat (> 70) et on cherche la reprise
+            is_rsi_ok = 30 <= last_rsi <= 55
+            
+            # RÈGLE 3 : Confirmation du mouvement (Croisement MACD)
+            is_macd_bullish = last_macd > last_macd_sig
+            
+            # --- 4. DÉTERMINATION DU SIGNAL ET STATUT ---
+            
             signal = 0
-            if is_bullish_trend and is_volatility_stable:
-                if rsi_rebound:
-                    signal = 1
-                elif is_momentum_positive and last_row['RSI'] < self.rsi_neutral:
-                    signal = 1
+            status = "NEUTRE"
+            
+            # Le signal d'achat nécessite la validation des 3 conditions
+            if is_bullish_trend and is_rsi_ok and is_macd_bullish:
+                signal = 1
+                status = "ACHAT"
+            
+            # Diagnostics pour l'UI (Dashboard)
+            elif not is_bullish_trend:
+                status = "SOUS MM200"
+            elif last_rsi > 55:
+                status = "SURACHAT"
+            elif not is_macd_bullish:
+                status = "ATTENTE MACD"
 
-            # --- PRÉPARATION DU RÉSUMÉ ---
+            # --- 5. ENCAPSULATION DES RÉSULTATS ---
+            
             return {
-                "Ticker": ticker,
-                "Close": float(last_row['Close']),
-                "Change": round(((last_row['Close'] / prev_row['Close']) - 1) * 100, 2),
-                "RSI": round(float(last_row['RSI']), 2),
-                "EMA200": round(float(last_row['EMA200']), 2),
-                "Dist_EMA200": round(((last_row['Close'] / last_row['EMA200']) - 1) * 100, 2),
-                "ATR": round(float(last_row['ATR']), 2),
-                "Signal": signal,
-                "Status": "ACHAT" if signal == 1 else "OBSERVATION"
+                'Ticker': ticker,
+                'Close': round(last_close, 2),
+                'EMA200': round(last_ema200, 2),
+                'Dist_EMA200': round(dist_ema, 2),
+                'RSI': round(last_rsi, 2),
+                'MACD': round(last_macd, 4),
+                'MACD_Sig': round(last_macd_sig, 4),
+                'MACD_Hist': round(df['MACD_Diff'].iloc[-1], 4),
+                'ATR': round(last_atr, 2),
+                'Change': round(df['Close'].pct_change().iloc[-1] * 100, 2),
+                'Signal': signal,
+                'Status': status,
+                'Timestamp': datetime.now()
             }
 
         except Exception as e:
-            logging.error(f"Erreur lors de l'analyse Alpha de {ticker} : {str(e)}")
+            self.logger.error(f"Erreur d'analyse critique pour {ticker}: {e}")
             return None
-
-    def get_strategy_info(self):
-        """Retourne les métadonnées de la stratégie."""
-        return {
-            "Name": self.strategy_name,
-            "Version": self.version,
-            "Indicators": ["EMA200", "EMA50", "EMA20", "RSI", "ATR", "Bollinger"]
-        }
