@@ -1,21 +1,26 @@
-# --- CORE FRAMEWORK ---
-streamlit==1.31.0
-pandas==2.2.0
-numpy==1.26.4
+# --- FRAMEWORK PRINCIPAL ---
+streamlit>=1.31.0
+pandas>=2.2.0
+numpy>=1.26.0
 
-# --- ANALYSE TECHNIQUE & DONNÉES ---
-yfinance==0.2.36
-ta==0.11.0
-scipy==1.12.0
+# --- ANALYSE TECHNIQUE & MARCHÉ ---
+# yfinance est mis à jour pour supporter Python 3.13
+yfinance>=0.2.40
+# ta (Technical Analysis Library)
+ta>=0.11.0
+scipy>=1.12.0
 
 # --- VISUALISATION ---
-plotly==5.18.0
+# Plotly pour les graphiques en chandeliers
+plotly>=5.20.0
 
-# --- SCRAPING & NEWS ---
-beautifulsoup4==4.12.3
-requests==2.31.0
-lxml==5.1.0
+# --- COLLECTE DE DONNÉES & NEWS ---
+# On utilise html.parser (natif) au lieu de lxml pour éviter les erreurs de compilation
+beautifulsoup4>=4.12.0
+requests>=2.31.0
+urllib3>=2.0.0
 
-# --- UTILS ---
-python-dateutil==2.8.2
-certifi==2024.2.2
+# --- SYSTÈME & PERFORMANCE ---
+python-dateutil>=2.8.2
+certifi>=2024.2.2
+six>=1.16.0
