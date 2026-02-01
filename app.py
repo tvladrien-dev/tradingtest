@@ -12,16 +12,13 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 # 1. IMPORTS DES MODULES PROPRIÉTAIRES
 try:
     from config import settings
-    from engine.data_loader import DataLoader
-    # Importation du moteur Elite corrigé
+    # TradingBotV1Elite contient maintenant toute la logique Data + Analyse
     from engine.trading_bot import TradingBotV1Elite 
-    from engine.regime import MarketRegimeFilter
-    from engine.news import NewsEngine
     from ui.dashboard import Dashboard
     from ui.components import UIComponents
 except ImportError as e:
     st.error(f"🛑 ERREUR DE STRUCTURE : {e}")
-    st.info("💡 Vérifiez que la classe dans engine/trading_bot.py se nomme bien TradingBotV1Elite")
+    st.info("💡 Vérifiez que vos fichiers sont bien placés dans les dossiers engine/ et ui/")
     st.stop()
 
 # Configuration du logging professionnel
@@ -35,133 +32,105 @@ def main():
     # --- INITIALISATION UI & THÈME ---
     ui_tools = UIComponents()
     ui_tools.set_page_config()
-    dashboard = Dashboard(settings)
     
-    # --- PERSISTENCE DES MOTEURS & ÉTAT DE SESSION ---
-    if 'data_loader' not in st.session_state:
-        st.session_state.data_loader = DataLoader()
+    # --- PERSISTENCE DU MOTEUR ÉLITE ---
+    # On initialise le bot une seule fois dans la session
     if 'bot' not in st.session_state:
-        # Initialisation du nouveau moteur V1 Elite avec les tickers du PEA
-        st.session_state.bot = TradingBotV1Elite(settings.TICKERS_PEA)
-    if 'regime_filter' not in st.session_state:
-        st.session_state.regime_filter = MarketRegimeFilter()
-    if 'news_engine' not in st.session_state:
-        st.session_state.news_engine = NewsEngine()
+        # Initialisation avec les tickers définis dans settings
+        st.session_state.bot = TradingBotV1Elite(tickers=settings.TICKERS_PEA)
+        logger.info("Moteur TradingBotV1Elite initialisé dans la session.")
+
+    # Initialisation du Dashboard avec l'instance du bot
+    dashboard = Dashboard(st.session_state.bot)
     
     # Cache pour éviter de notifier plusieurs fois le même signal dans la journée
     if 'notified_tickers' not in st.session_state:
         st.session_state.notified_tickers = {}
 
     # --- BARRE LATÉRALE ---
+    # Récupération des paramètres de l'UI (mode de scan, etc.)
     sidebar_params = dashboard.render_sidebar()
     
     # --- DÉBUT DU CYCLE DE SCAN ---
-    st.toast("Initialisation du terminal Alpha Quant...", icon="🚀")
+    st.toast("Actualisation du terminal Alpha Quant...", icon="🚀")
     
     try:
-        # ÉTAPE 1 : Analyse Macro (Régime de Marché)
-        # Correction : On s'assure que le filtre de régime n'utilise pas de 5m
-        with st.spinner("Analyse du sentiment de marché (VIX & CAC40)..."):
-            market_status = st.session_state.regime_filter.get_market_status()
+        # ÉTAPE 1 : Synchronisation des données (Moteur fusionné)
+        # On utilise la méthode interne du bot qui télécharge et enrichit les indicateurs
+        with st.spinner(f"Acquisition des flux pour {len(settings.TICKERS_PEA)} actifs..."):
+            # On force la sync en intervalle "1d" pour la stabilité du Swing Trading
+            success_sync = st.session_state.bot.sync_market_data(period="2y", interval="1d")
         
-        # ÉTAPE 2 : Acquisition des flux boursiers
-        # MODIFICATION CRITIQUE : On passe de "5m" à "1d" pour éviter le bug 
-        # "requested range must be within the last 60 days" que tu as dans tes logs.
-        with st.spinner(f"Synchronisation de {len(settings.TICKERS_PEA)} actifs..."):
-            raw_data = st.session_state.data_loader.download_market_data(
-                settings.TICKERS_PEA, 
-                interval="1d"  # Changement effectué ici pour la stabilité
-            )
-        
-        if not raw_data:
-            st.error("⚠️ Impossible de joindre les serveurs de données (Rate Limit). Re-tentative dans 30s...")
-            time.sleep(30)
-            st.rerun()
+        if not success_sync:
+            st.error("⚠️ Échec de synchronisation. Limite API Yahoo atteinte ou problème réseau.")
+            if st.button("Réessayer"):
+                st.rerun()
+            st.stop()
 
-        # ÉTAPE 3 : Analyse Quantitative & Signaux
-        all_signals = []
-        progress_bar = st.progress(0)
+        # ÉTAPE 2 : Analyse Quantitative & Signaux
+        # Le bot traite tout le data_store interne
+        with st.spinner("Analyse algorithmique des vecteurs Alpha..."):
+            all_signals = st.session_state.bot.process_signals()
         
-        # On itère sur les tickers pour calculer les probabilités et la stratégie V1
-        for i, (ticker, df) in enumerate(raw_data.items()):
-            # Analyse profonde via le moteur V1 Elite (ADX, RSI, EMA, Sentiment)
-            signal_data = st.session_state.bot.process_ticker(ticker)
-            
-            if signal_data:
-                # Injection de la direction macro calculée par le RegimeFilter
-                signal_data['Market_Trend'] = market_status['status']
-                all_signals.append(signal_data)
-                
-                # --- SYSTÈME DE NOTIFICATION NTFY (ACHATS PRIORITAIRES) ---
-                if signal_data.get('action') == "ACHAT":
-                    last_price = signal_data.get('prix')
-                    prob = signal_data.get('probabilite')
-                    
-                    # On ne notifie que si Probabilité > 75% (Elite) et nouveau signal
+        # Conversion en DataFrame pour le traitement UI
+        signals_df = pd.DataFrame(all_signals) if all_signals else pd.DataFrame()
+
+        # ÉTAPE 3 : Système de Notification Intelligent
+        if not signals_df.empty:
+            for _, signal in signals_df.iterrows():
+                ticker = signal['ticker']
+                prob = signal['probabilite']
+                action = signal['action']
+                last_price = signal['prix']
+
+                # Logique d'alerte : Seulement si probabilité Elite (>= 75%)
+                if action == "ACHAT" and prob >= 75:
                     should_notify = False
+                    
                     if ticker not in st.session_state.notified_tickers:
-                        if prob >= 75: should_notify = True
+                        should_notify = True
                     else:
                         old_price = st.session_state.notified_tickers[ticker]
-                        # Alerte si le prix varie de plus de 2% depuis la dernière notification
+                        # On re-notifie si le prix a bougé de 2% depuis la dernière alerte
                         if abs((last_price / old_price) - 1) > 0.02:
                             should_notify = True
                     
                     if should_notify:
-                        # Envoi via la méthode intégrée au bot (utilise ntfy)
-                        success = st.session_state.bot.send_notification(signal_data)
-                        if success:
+                        # Envoi via la méthode ntfy intégrée au bot
+                        notif_sent = st.session_state.bot.send_notification(signal)
+                        if notif_sent:
                             st.session_state.notified_tickers[ticker] = last_price
-                            st.toast(f"📱 Alerte Push envoyée : {ticker} ({prob}%)", icon="📲")
+                            st.toast(f"📱 Alerte Push : {ticker} ({prob}%)", icon="📲")
 
-            progress_bar.progress((i + 1) / len(raw_data))
-        
-        progress_bar.empty()
-        
-        # --- ÉTAPE 4 : TRIAGE ET RENDU ---
-        signals_df = pd.DataFrame(all_signals)
-        
-        if not signals_df.empty:
-            # Tri : ACHAT en premier, puis par score de Probabilité décroissant
-            signals_df['sort_order'] = signals_df['action'].apply(
-                lambda x: 0 if x == "ACHAT" else (1 if x == "VENTE" else 2)
-            )
-            signals_df = signals_df.sort_values(by=['sort_order', 'probabilite'], ascending=[True, False])
-            
-            # Génération du graphique sectoriel avant le rendu final
-            st.session_state.bot.plot_sectors(all_signals)
-
-        # Rendu de l'Interface Dashboard via le module ui/
-        dashboard.render_main_view(
-            market_status=market_status,
-            signals_df=signals_df,
-            news_engine=st.session_state.news_engine
-        )
+        # --- ÉTAPE 4 : RENDU DE L'INTERFACE ---
+        # On délègue tout l'affichage au dashboard
+        dashboard.render_main_view()
 
         # ÉTAPE 5 : Gestion du cycle de rafraîchissement
-        # On définit 300s (5 min) comme intervalle de repos
-        refresh_delay = 300 
-
+        refresh_delay = 300  # 5 minutes
         dashboard.render_footer()
 
-        # --- AUTO-REFRESH LOGIC ---
+        # --- LOGIQUE D'AUTO-REFRESH (MATRICE) ---
         st.divider()
         placeholder_timer = st.empty()
         
-        # Vérification des heures d'ouverture (09:00 - 17:30 pour Euronext) via le DataLoader
-        if st.session_state.data_loader.check_market_hours():
+        # On vérifie si on est en heure de trading (09h00 - 17h30)
+        now = datetime.now()
+        is_market_open = (now.weekday() < 5) and (9 <= now.hour < 18)
+
+        if is_market_open:
             for i in range(refresh_delay, 0, -1):
                 placeholder_timer.markdown(
-                    f"<div style='text-align:center; color:#00FF41; font-family:monospace; font-size:20px;'>"
-                    f"🕒 PROCHAIN SCAN DANS {i}s | MODE: SWING DAILY OPTIMISÉ"
+                    f"<div style='text-align:center; color:#00FF41; font-family:monospace; font-size:18px;'>"
+                    f"🕒 PROCHAIN SCAN DANS {i}s | MODE: ÉLITE V1 (1D)"
                     f"</div>", 
                     unsafe_allow_html=True
                 )
                 time.sleep(1)
             st.rerun()
         else:
-            placeholder_timer.warning("🌙 Marché Euronext fermé. Mode analyse de clôture activé.")
-            if st.button("🔄 Lancer un scan manuel de nuit"):
+            placeholder_timer.warning("🌙 Marché Euronext fermé. Analyse sur cours de clôture.")
+            if st.button("🔄 Lancer un scan manuel"):
                 st.rerun()
 
     except Exception as e:
