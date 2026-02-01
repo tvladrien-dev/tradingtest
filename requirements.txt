@@ -4,23 +4,24 @@ pandas>=2.2.0
 numpy>=1.26.0
 
 # --- ANALYSE TECHNIQUE & MARCHÉ ---
-# yfinance est mis à jour pour supporter Python 3.13
-yfinance>=0.2.40
-# ta (Technical Analysis Library)
+yfinance>=1.1.0        # Version critique pour la stabilité en 2026
 ta>=0.11.0
 scipy>=1.12.0
 
 # --- VISUALISATION ---
-# Plotly pour les graphiques en chandeliers
 plotly>=5.20.0
 
 # --- COLLECTE DE DONNÉES & NEWS ---
-# On utilise html.parser (natif) au lieu de lxml pour éviter les erreurs de compilation
 beautifulsoup4>=4.12.0
 requests>=2.31.0
-urllib3>=2.0.0
+urllib3>=2.0.0         # Sécurité renforcée pour les requêtes HTTPS
 
-# --- SYSTÈME & PERFORMANCE ---
+# --- SYSTÈME ---
 python-dateutil>=2.8.2
-certifi>=2024.2.2
-six>=1.16.0
+certifi>=2024.2.2      # Indispensable pour la validation des certificats SSL (Yahoo/NTFY)
+
+# --- VISUALISATION ---
+# Plotly pour les graphiques interactifs en chandeliers
+plotly>=5.20.0
+# Matplotlib pour la génération de graphiques statiques (secteurs, exports images)
+matplotlib>=3.10.0
