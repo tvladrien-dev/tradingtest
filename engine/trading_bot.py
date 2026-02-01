@@ -8,238 +8,202 @@ import time
 import os
 from datetime import datetime
 
-# --- CONFIGURATION ENVIRONNEMENTALE CRITIQUE 2026 ---
-# Streamlit Cloud limite l'écriture. On force le cache dans /tmp pour éviter 
-# l'erreur "OperationalError: database is locked" liée à SQLite.
+# --- CONFIGURATION DU CACHE RÉSILIENT ---
 try:
-    cache_dir = "/tmp/yf_cache_v12"
+    cache_dir = "/tmp/yf_cache_v1_final"
     if not os.path.exists(cache_dir):
         os.makedirs(cache_dir)
     yf.set_tz_cache_location(cache_dir)
-except Exception as e:
-    # Fallback si le système de fichiers est restreint
+except Exception:
     pass
 
-# Configuration du logging pour un monitoring précis en production
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger("TradingBotElite")
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("TradingBot_V1_Elite")
 
 class TradingBotV1Elite:
     """
-    QUANT MASTER v12.7.8 - ÉDITION DE PRODUCTION INTÉGRALE
-    Système expert de scan de marché avec scoring probabiliste et routage d'alertes.
+    QUANT MASTER v1 - STRATÉGIE TENDANCE SAINE & SENTIMENT GLOBAL
+    Analyse graphique, Macro (VIX) et Actualités mondiales.
     """
     
     def __init__(self, tickers=None):
         self.tickers = tickers if tickers else []
-        # Endpoint NTFY pour les alertes mobiles (à personnaliser dans votre dashboard)
-        self.ntfy_url = "https://ntfy.sh/votre_topic_secret_unique_2026" 
-        self.last_sync = None
+        # Endpoint NTFY (à personnaliser)
+        self.ntfy_url = "https://ntfy.sh/votre_topic_secret_2026" 
         self.data_store = {}
         self.last_results = []
-        logger.info("Bot Elite initialisé - Moteur de résilience 2026 opérationnel.")
+        logger.info("Bot V1 Initialisé : En attente de confirmation de tendance.")
 
-    # --- SECTION : ACQUISITION ET NETTOYAGE DES DONNÉES (LOTS DE 40) ---
+    # --- SECTION : ACQUISITION MASSIVE (BATCH PROCESSING) ---
 
     def sync_market_data(self, period="2y", interval="1d"):
-        """Téléchargement par lots pour contourner le Rate Limit et les erreurs 404."""
-        if not self.tickers:
-            return {}
+        """Téléchargement par lots de 40 pour éviter les bannissements Yahoo."""
+        if not self.tickers: return {}
 
-        # Blacklist dynamique basée sur vos logs (actifs délistés ou corrompus)
-        blacklist = [
-            'POL-USD', 'COMP-USD', 'GRT-USD', 'MNT-USD', 'ALT-USD', 
-            'BOUY.PA', 'EXO.PA', 'FDJ.PA', 'TRIA.PA', 'ALMD.PA', 'LUM=F',
-            'RELX.AS', 'BPER.MI', 'AGEAS.BR', 'IMX-USD', 'GMX-USD',
-            'TAO-USD', 'AXL-USD', 'RON-USD', 'BRETT-USD', 'PEPE-USD'
-        ]
+        # Nettoyage des tickers problématiques vus dans les logs
+        blacklist = ['POL-USD', 'TAO-USD', 'AXL-USD', 'RON-USD', 'BRETT-USD']
         active_tickers = [t for t in self.tickers if t not in blacklist]
 
-        logger.info(f"Synchronisation de {len(active_tickers)} actifs par lots de 40...")
-        
-        # Partitionnement pour éviter de saturer les serveurs de Yahoo Finance
         chunk_size = 40
         for i in range(0, len(active_tickers), chunk_size):
             chunk = active_tickers[i:i + chunk_size]
             try:
                 raw_data = yf.download(
-                    tickers=chunk,
-                    period=period,
-                    interval=interval,
-                    group_by='ticker',
-                    auto_adjust=True,
-                    threads=True,
-                    progress=False
+                    tickers=chunk, period=period, interval=interval,
+                    group_by='ticker', auto_adjust=True, threads=True, progress=False
                 )
 
                 for ticker in chunk:
                     try:
-                        # Gestion de l'extraction selon le format (Single Ticker vs MultiIndex)
-                        if len(chunk) == 1:
-                            df = raw_data.copy()
-                        else:
-                            if ticker not in raw_data.columns.levels[0]:
-                                continue
-                            df = raw_data[ticker].copy()
-                        
+                        df = raw_data[ticker].copy() if len(chunk) > 1 else raw_data.copy()
                         df = df.dropna(subset=['Close'])
-                        
-                        # Validation de la profondeur historique pour EMA200
+                        # Minimum 200 jours pour l'EMA200
                         if len(df) >= 200:
-                            self.data_store[ticker] = self._enrich_indicators(df)
-                    except Exception:
-                        continue
-                
-                # Sommeil de sécurité (Anti-Rate Limit)
-                time.sleep(1.5)
-                
+                            self.data_store[ticker] = self._enrich_v1_indicators(df)
+                    except: continue
+                time.sleep(1.2)
             except Exception as e:
-                logger.error(f"Échec sur le lot commençant par {chunk[0]} : {e}")
-
-        self.last_sync = datetime.now()
+                logger.error(f"Erreur Sync Lot {i}: {e}")
+        
         return self.data_store
 
-    def _enrich_indicators(self, df):
-        """Calcul exhaustif de la matrice d'indicateurs (Alpha Matrix)."""
-        # Tendances (EMA)
-        df['EMA50'] = ta.trend.EMAIndicator(df['Close'], window=50).ema_indicator()
+    def _enrich_v1_indicators(self, df):
+        """Calcul de la matrice technique complète V1."""
+        # --- Tendance ---
         df['EMA200'] = ta.trend.EMAIndicator(df['Close'], window=200).ema_indicator()
         
-        # Momentum & Force (RSI / ADX)
-        df['RSI'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
-        df['ADX'] = ta.trend.ADXIndicator(df['High'], df['Low'], df['Close'], window=14).adx()
+        # --- Analyse Graphique (Higher Lows sur 10 jours) ---
+        df['low_rolling'] = df['Low'].rolling(window=10).min()
+        df['is_uptrend'] = df['low_rolling'] >= df['low_rolling'].shift(10)
         
-        # Volatilité & Accélération (ATR / MACD)
-        df['ATR'] = ta.volatility.AverageTrueRange(df['High'], df['Low'], df['Close'], window=14).average_true_range()
+        # --- Momentum ---
+        df['RSI'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
         macd = ta.trend.MACD(df['Close'])
+        df['MACD'] = macd.macd()
         df['MACD_Hist'] = macd.macd_diff()
+        
+        # --- Volatilité (ATR pour Stop Loss) ---
+        df['ATR'] = ta.volatility.AverageTrueRange(df['High'], df['Low'], df['Close'], window=14).average_true_range()
         
         return df
 
-    # --- SECTION : ANALYSE DE SENTIMENT ET SCORING PROBABILISTE ---
+    # --- SECTION : ANALYSE EXTERNE (ACTUALITÉS & SECTEUR) ---
 
-    def get_news_sentiment(self, ticker):
-        """Extraction et analyse sémantique des news Yahoo Finance."""
+    def get_contextual_data(self, ticker):
+        """Récupère le sentiment des news et les infos fondamentales."""
         try:
             stock = yf.Ticker(ticker)
+            info = stock.info
             news = getattr(stock, 'news', [])
-            if not news: return "Neutre ⚪", 0
             
+            # Analyse de sentiment simple
             score = 0
-            pos = {'hausse', 'profit', 'achat', 'croissance', 'positif', 'gain', 'upgrade'}
-            neg = {'chute', 'baisse', 'perte', 'alerte', 'négatif', 'déficit', 'downgrade'}
+            pos_words = {'profit', 'croissance', 'achat', 'hausse', 'positif', 'gain', 'upgrade'}
+            neg_words = {'chute', 'baisse', 'perte', 'alerte', 'négatif', 'faillite', 'downgrade'}
             
             for item in news[:5]:
                 title = item.get('title', '').lower()
-                score += sum(1 for w in pos if w in title)
-                score -= sum(1 for w in neg if w in title)
+                score += sum(1 for w in pos_words if w in title)
+                score -= sum(1 for w in neg_words if w in title)
             
-            label = "Positif ✅" if score > 0 else ("Négatif ⚠️" if score < 0 else "Neutre ⚪")
-            return label, score
+            sentiment = "Positif ✅" if score > 0 else ("Négatif ⚠️" if score < 0 else "Neutre ⚪")
+            return sentiment, info.get('sector', 'Divers'), info.get('longName', ticker)
         except:
-            return "Neutre ⚪", 0
+            return "Neutre ⚪", "Inconnu", ticker
+
+    # --- SECTION : MOTEUR DE DÉCISION ET SCORING ---
 
     def process_signals(self):
-        """Moteur de décision probabiliste avec protection Pandas 2.3+."""
+        """Moteur V1 : Analyse graphique + Macro VIX + Scoring."""
         results = []
         
-        # Acquisition du VIX pour filtrer les périodes de panique globale
+        # Filtre Macro : Indice de la peur (VIX)
         try:
             vix_df = yf.download("^VIX", period="1d", progress=False)
-            vix_val = float(vix_df['Close'].iloc[-1].item()) if not vix_df.empty else 22.0
-        except:
-            vix_val = 22.0
+            vix_val = float(vix_df['Close'].iloc[-1].item())
+        except: vix_val = 20.0
 
         for ticker, df in self.data_store.items():
             try:
-                if len(df) < 2: continue
                 last = df.iloc[-1]
                 prev = df.iloc[-2]
                 
-                # Conversion scalaire via .item() pour éviter les erreurs de type Series
+                # Extraction des valeurs scalaires
                 price = float(last['Close'].item())
-                rsi_val = float(last['RSI'].item())
-                adx_val = float(last['ADX'].item())
                 ema200 = float(last['EMA200'].item())
-                ema50 = float(last['EMA50'].item())
+                rsi = float(last['RSI'].item())
+                macd = float(last['MACD'].item())
                 macd_h = float(last['MACD_Hist'].item())
-                prev_macd_h = float(prev['MACD_Hist'].item())
                 atr = float(last['ATR'].item())
+                is_uptrend = bool(last['is_uptrend'])
 
-                # Algorithme de Scoring Propriétaire (Base 100)
+                # --- ALGORITHME DE SCORING V1 ---
                 prob = 0
-                if price > ema200: prob += 30
-                if ema50 > ema200: prob += 20
-                if adx_val > 25: prob += 20
-                if macd_h > prev_macd_h: prob += 15
-                if 40 <= rsi_val <= 65: prob += 10
-                if vix_val < 22: prob += 5
+                if price > ema200: prob += 35         # Règle d'or : Tendance saine
+                if is_uptrend: prob += 25             # Graphique : Creux ascendants
+                if 40 <= rsi <= 65: prob += 15        # RSI non surchargé
+                if macd_h > prev['MACD_Hist']: prob += 15 # MACD s'accélère
+                if vix_val < 25: prob += 10           # Contexte marché calme
 
-                # Risk Management : Stop-Loss (2x ATR) et Take-Profit (4x ATR)
-                sl_pct = ((atr * 2) / price) * 100
-                tp_price = price + (atr * 4)
-                gain_pct = ((atr * 4) / price) * 100
+                # --- GESTION DU RISQUE (ATR x2) ---
+                sl_amount = atr * 2
+                sl_pct = round((sl_amount / price) * 100, 2)
+                # Ratio Gain/Risque 1:2
+                gain_visé_pct = sl_pct * 2
+                tp_price = round(price * (1 + gain_visé_pct/100), 2)
 
+                # Classification de l'action
                 action = "VEILLE"
-                if prob >= 75: action = "ACHAT"
-                elif rsi_val > 80: action = "VENTE"
+                if prob >= 75 and vix_val < 30: 
+                    action = "ACHAT"
+                elif rsi > 75: 
+                    action = "VENTE"
 
-                sentiment, _ = self.get_news_sentiment(ticker)
-                
+                sentiment, sector, nom = self.get_contextual_data(ticker)
+
                 results.append({
-                    'ticker': ticker,
-                    'prix': round(price, 2),
-                    'rsi': round(rsi_val, 2),
-                    'probabilite': prob,
-                    'action': action,
-                    'sentiment': sentiment,
-                    'sl_pct': round(sl_pct, 2),
-                    'tp': round(tp_price, 2),
-                    'gain_pct': round(gain_pct, 2),
-                    'last_update': datetime.now().strftime("%H:%M")
+                    'ticker': ticker, 'nom': nom, 'prix': round(price, 2),
+                    'rsi': round(rsi, 2), 'macd': round(macd, 2), 'vix': round(vix_val, 2),
+                    'ema200': round(ema200, 2), 'action': action, 'probabilite': prob,
+                    'sl_pct': sl_pct, 'tp': tp_price, 'gain_pct': round(gain_visé_pct, 2),
+                    'sector': sector, 'sentiment': sentiment
                 })
-            except Exception:
-                continue
+            except Exception: continue
         
-        self.last_results = sorted(results, key=lambda x: x['probabilite'], reverse=True)
-        return self.last_results
+        # TRI FINAL : ACHATS d'abord, puis VENTES, par probabilité décroissante
+        results.sort(key=lambda x: (x['action'] != 'ACHAT', x['action'] != 'VENTE', -x['probabilite']))
+        self.last_results = results
+        return results
 
-    # --- SECTION : NOTIFICATIONS ET UTILITAIRES ---
+    # --- SECTION : NOTIFICATIONS ENRICHIES ---
 
-    def send_notification(self, signal):
-        """Envoi de l'alerte Push via NTFY (Requis par app.py)."""
-        if signal['action'] == "VEILLE":
-            return False
-            
-        emoji = "🚀" if signal['action'] == "ACHAT" else "⚠️"
-        title = f"{emoji} {signal['action']} : {signal['ticker']} ({signal['probabilite']}%)"
-        body = (
-            f"💰 Prix: {signal['prix']}€\n"
-            f"🛡️ SL: -{signal['sl_pct']}% | TP: +{signal['gain_pct']}%"
+    def send_notification(self, s):
+        """Envoi NTFY avec détails complets demandés."""
+        if s['action'] == "VEILLE": return False
+        
+        emoji = "🚀" if s['action'] == "ACHAT" else "⚠️"
+        title = f"{emoji} {s['action']} : {s['ticker']} ({s['probabilite']}%)"
+        
+        msg = (
+            f"Nom: {s['nom']}\n"
+            f"Prix Actuel: {s['prix']}€ | EMA200: {s['ema200']}\n"
+            f"RSI: {s['rsi']} | MACD: {s['macd']}\n"
+            f"VIX: {s['vix']} | Sentiment: {s['sentiment']}\n"
+            f"---------------------------\n"
+            f"💰 Achat Conseillé: {s['prix']}€\n"
+            f"🎯 Vente Conseillée: {s['tp']}€\n"
+            f"📈 Gain Prévu: +{s['gain_pct']}%\n"
+            f"🛡️ Stop Loss Suiveur: {s['sl_pct']}% (ATR x2)"
         )
         
         try:
-            res = requests.post(
-                self.ntfy_url,
-                data=body.encode('utf-8'),
-                headers={
-                    "Title": title.encode('utf-8'),
-                    "Priority": "high",
-                    "Tags": "chart_with_upwards_trend,money"
-                },
-                timeout=5
-            )
-            return res.status_code == 200
-        except Exception:
-            return False
+            requests.post(self.ntfy_url, data=msg.encode('utf-8'), 
+                          headers={"Title": title.encode('utf-8'), "Priority": "high"})
+            return True
+        except: return False
 
     def get_last_signals(self):
-        """Récupération des signaux en cache pour l'interface Streamlit."""
-        return self.last_results if self.last_results else self.process_signals()
+        return self.last_results
 
     def get_data_for_ticker(self, ticker):
-        """Expose le DataFrame historique pour les graphiques Plotly."""
         return self.data_store.get(ticker)
