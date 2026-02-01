@@ -1,118 +1,134 @@
+import yfinance as yf
 import pandas as pd
-import numpy as np
 import ta
+import requests
+import time
+import matplotlib.pyplot as plt
+from datetime import datetime
 import logging
 
-class TradingBotPEA:
-    """
-    Moteur de trading Alpha Quant v2.5.
-    Logique : Tendance EMA200 + RSI Accumulation + Confirmation MACD + Volatilité ATR.
-    """
-    
-    def __init__(self):
-        self.logger = logging.getLogger("TradingBot")
+# === CONFIGURATION ===
+NTFY_URL = "https://ntfy.sh/votre_topic_unique" # À CHANGER
+TICKERS = ["SU.PA", "AIR.PA", "MC.PA", "BNP.PA", "OR.PA", "BTC-USD", "ETH-USD"]
+RISK_FREE_VIX = 25  # Seuil de peur (VIX)
 
-    def analyze(self, ticker, df):
-        """
-        Analyse un actif selon la stratégie combinée pour PEA :
-        1. Tendance : Prix > EMA 200 (Condition Sine Qua Non)
-        2. Momentum : RSI entre 30 et 55 (Pas de surachat, potentiel de hausse)
-        3. Cycle : MACD > Ligne de Signal (Confirmation de l'impulsion)
-        4. Risque : Mesure de l'ATR pour le dimensionnement
-        """
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("EliteBot")
+
+class EliteTradingBot:
+    def __init__(self, tickers):
+        self.tickers = tickers
+        self.history = []
+
+    def get_news_sentiment(self, ticker):
+        """Analyse de l'actualité via Yahoo Finance"""
         try:
-            # Vérification de la profondeur historique pour l'EMA 200
-            if df is None or len(df) < 200:
-                self.logger.warning(f"Historique insuffisant pour {ticker} ({len(df) if df is not None else 0} jours)")
-                return None
+            stock = yf.Ticker(ticker)
+            news = stock.news
+            if not news: return 0
+            titles = [n['title'].lower() for n in news[:5]]
+            pos = sum(1 for t in titles if any(w in t for w in ['record', 'gain', 'contrat', 'hausse', 'succès']))
+            neg = sum(1 for t in titles if any(w in t for w in ['chute', 'baisse', 'dette', 'perte', 'alerte']))
+            return (pos - neg)
+        except: return 0
 
-            # --- 1. CALCUL DES INDICATEURS (BIBLIOTHÈQUE TA) ---
-            
-            # TENDANCE : Moyenne Mobile Exponentielle 200 jours
-            df['EMA200'] = ta.trend.ema_indicator(df['Close'], window=200)
-            
-            # MOMENTUM : Relative Strength Index 14 jours
-            df['RSI'] = ta.momentum.rsi(df['Close'], window=14)
-            
-            # CYCLE : MACD (Moving Average Convergence Divergence)
-            macd_obj = ta.trend.MACD(
-                df['Close'], 
-                window_slow=26, 
-                window_fast=12, 
-                window_sign=9
-            )
-            df['MACD'] = macd_obj.macd()
-            df['MACD_Signal'] = macd_obj.macd_signal()
-            df['MACD_Diff'] = macd_obj.macd_diff() # Histogramme
-            
-            # VOLATILITÉ : Average True Range (Pour les futures limites de Stop/Profit)
-            df['ATR'] = ta.volatility.average_true_range(
-                df['High'], 
-                df['Low'], 
-                df['Close'], 
-                window=14
-            )
+    def compute_indicators(self, ticker):
+        """Calcul de la stratégie V1 + Probabilités"""
+        # Intervalle 5m pour le temps réel
+        df = yf.download(ticker, period="5d", interval="5m", progress=False)
+        if len(df) < 50: return None
 
-            # --- 2. EXTRACTION DES DONNÉES DE DÉCISION ---
-            
-            last_close = df['Close'].iloc[-1]
-            last_ema200 = df['EMA200'].iloc[-1]
-            last_rsi = df['RSI'].iloc[-1]
-            last_macd = df['MACD'].iloc[-1]
-            last_macd_sig = df['MACD_Signal'].iloc[-1]
-            last_atr = df['ATR'].iloc[-1]
-            
-            # Calcul de la distance à l'EMA 200
-            dist_ema = ((last_close / last_ema200) - 1) * 100
+        # Indicateurs V1
+        df['EMA200'] = ta.trend.ema_indicator(df['Close'], window=200)
+        df['RSI'] = ta.momentum.rsi(df['Close'], window=14)
+        macd = ta.trend.MACD(df['Close'])
+        df['MACD_Hist'] = macd.macd_diff()
+        df['ATR'] = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'])
+        
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+        vix = yf.download("^VIX", period="1d", interval="5m", progress=False)['Close'].iloc[-1]
 
-            # --- 3. LOGIQUE DE FILTRAGE ET SIGNAL ---
-            
-            # RÈGLE 1 : Tendance de fond (On n'achète que ce qui monte à long terme)
-            is_bullish_trend = last_close > last_ema200
-            
-            # RÈGLE 2 : Zone de prix saine (RSI entre 30 et 55)
-            # On évite le surachat (> 70) et on cherche la reprise
-            is_rsi_ok = 30 <= last_rsi <= 55
-            
-            # RÈGLE 3 : Confirmation du mouvement (Croisement MACD)
-            is_macd_bullish = last_macd > last_macd_sig
-            
-            # --- 4. DÉTERMINATION DU SIGNAL ET STATUT ---
-            
-            signal = 0
-            status = "NEUTRE"
-            
-            # Le signal d'achat nécessite la validation des 3 conditions
-            if is_bullish_trend and is_rsi_ok and is_macd_bullish:
-                signal = 1
-                status = "ACHAT"
-            
-            # Diagnostics pour l'UI (Dashboard)
-            elif not is_bullish_trend:
-                status = "SOUS MM200"
-            elif last_rsi > 55:
-                status = "SURACHAT"
-            elif not is_macd_bullish:
-                status = "ATTENTE MACD"
+        # --- CALCUL PROBABILITÉ (SCORE 0-100) ---
+        score = 0
+        if last['Close'] > last['EMA200']: score += 30
+        if last['RSI'] < 40: score += 25
+        if last['MACD_Hist'] > prev['MACD_Hist']: score += 20
+        if vix < RISK_FREE_VIX: score += 15
+        sentiment = self.get_news_sentiment(ticker)
+        if sentiment > 0: score += 10
 
-            # --- 5. ENCAPSULATION DES RÉSULTATS ---
-            
-            return {
-                'Ticker': ticker,
-                'Close': round(last_close, 2),
-                'EMA200': round(last_ema200, 2),
-                'Dist_EMA200': round(dist_ema, 2),
-                'RSI': round(last_rsi, 2),
-                'MACD': round(last_macd, 4),
-                'MACD_Sig': round(last_macd_sig, 4),
-                'MACD_Hist': round(df['MACD_Diff'].iloc[-1], 4),
-                'ATR': round(last_atr, 2),
-                'Change': round(df['Close'].pct_change().iloc[-1] * 100, 2),
-                'Signal': signal,
-                'Status': status,
-                'Timestamp': datetime.now()
-            }
+        # --- LOGIQUE STOP LOSS & GAINS ---
+        atr_value = last['ATR'] * 2
+        sl_pct = (atr_value / last['Close']) * 100
+        tp_price = last['Close'] + (atr_value * 2) # Ratio 1:2
+        gains_prevus = ((tp_price / last['Close']) - 1) * 100
 
-        except Exception as e:
-            self.logger.error(f"Erreur d'analyse critique pour {ticker}: {e}")
-            return None
+        return {
+            'ticker': ticker,
+            'prix': last['Close'],
+            'rsi': last['RSI'],
+            'macd': "HAUSSIER" if last['MACD_Hist'] > 0 else "BAISSIER",
+            'vix': vix,
+            'ema200': last['EMA200'],
+            'sl_pct': sl_pct,
+            'tp': tp_price,
+            'gains_pct': gains_prevus,
+            'probabilite': score,
+            'sentiment': sentiment,
+            'action': "ACHAT" if (score > 60 and last['RSI'] < 45) else ("VENTE" if last['RSI'] > 75 else "VEILLE")
+        }
+
+    def generate_sector_chart(self, signals):
+        """Génère un graphique des secteurs conseillés"""
+        sectors = []
+        for s in signals:
+            if s['action'] == "ACHAT":
+                info = yf.Ticker(s['ticker']).info
+                sectors.append(info.get('sector', 'Crypto/Autres'))
+        
+        if sectors:
+            pd.Series(sectors).value_counts().plot(kind='pie', autopct='%1.1f%%', colormap='viridis')
+            plt.title("Répartition Sectorielle des Opportunités")
+            plt.savefig("secteurs_conseilles.png")
+            plt.close()
+
+    def run(self):
+        while True:
+            now = datetime.now().strftime("%H:%M:%S")
+            print(f"--- ACTUALISATION : {now} ---")
+            
+            results = []
+            for t in self.tickers:
+                data = self.compute_indicators(t)
+                if data: results.append(data)
+
+            # TRI : ACHAT en premier, puis par Probabilité décroissante
+            results.sort(key=lambda x: (x['action'] != "ACHAT", -x['probabilite']))
+
+            for res in results:
+                print(f"[{res['action']}] {res['ticker']} - Probabilité: {res['probabilite']}%")
+                
+                # Notification NTFY pour les signaux forts
+                if res['action'] in ["ACHAT", "VENTE"]:
+                    msg = (
+                        f"📢 SIGNAL {res['action']} - Probabilité: {res['probabilite']}%\n"
+                        f"Ticker: {res['ticker']}\n"
+                        f"Prix: {res['prix']:.2f}€ | VIX: {res['vix']:.1f}\n"
+                        f"RSI: {res['rsi']:.1f} | EMA200: {res['ema200']:.2f}\n"
+                        f"--------------------------\n"
+                        f"🎯 Achat conseillé: {res['prix']:.2f}€\n"
+                        f"🏁 Vente conseillée: {res['tp']:.2f}€\n"
+                        f"🛡️ Stop Loss Suiveur: {res['sl_pct']:.2f}%\n"
+                        f"📈 Gains prévus: +{res['gains_pct']:.2f}%\n"
+                        f"🌍 Sentiment News: {res['sentiment']}"
+                    )
+                    requests.post(NTFY_URL, data=msg.encode('utf-8'))
+
+            self.generate_sector_chart(results)
+            print("Graphique sectoriel mis à jour. Prochain scan dans 5 min...")
+            time.sleep(300)
+
+if __name__ == "__main__":
+    bot = EliteTradingBot(TICKERS)
+    bot.run()
