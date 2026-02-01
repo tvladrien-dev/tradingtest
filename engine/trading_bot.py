@@ -1,37 +1,120 @@
 import yfinance as yf
 import pandas as pd
+import numpy as np
 import ta
 import requests
-import matplotlib.pyplot as plt
 import logging
 import time
 from datetime import datetime
 
-# Configuration avancée du logging
+# Configuration du logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("TradingBotElite")
 
 class TradingBotV1Elite:
     """
-    Moteur de Trading Institutionnel - Version Swing Daily Intégrale.
-    Utilise l'ADX, les EMA 50/200 et l'analyse de sentiment pour prédire les cycles.
+    Moteur de Trading Institutionnel Intégré.
+    Fusion de DataLoader (Acquisition/Indicateurs) et TradingBot (Analyse/Signaux).
+    Version : 12.5.1 (2026) - Full Performance
     """
+    
     def __init__(self, tickers=None):
         self.tickers = tickers if tickers else []
-        self.ntfy_url = "https://ntfy.sh/votre_topic_unique_2026"
+        self.ntfy_url = "https://ntfy.sh/votre_topic_unique_2026" # À mettre en variable d'env
+        self.last_sync = None
+        self.data_store = {}
+        logger.info("Bot Elite Initialisé avec moteur DataLoader intégré.")
+
+    # --- SECTION : MOTEUR DE DONNÉES (ANCIENNEMENT DATA_LOADER) ---
+
+    def sync_market_data(self, period="2y", interval="1d"):
+        """
+        Téléchargement groupé haute performance et enrichissement technique.
+        Remplace l'ancien DataLoader.download_market_data.
+        """
+        if not self.tickers:
+            logger.warning("Aucun ticker à synchroniser.")
+            return {}
+
+        logger.info(f"Synchronisation de {len(self.tickers)} actifs...")
+        
+        try:
+            # Téléchargement groupé (Threads=True pour la vitesse)
+            raw_data = yf.download(
+                tickers=self.tickers,
+                period=period,
+                interval=interval,
+                group_by='ticker',
+                auto_adjust=True,
+                threads=True
+            )
+
+            for ticker in self.tickers:
+                try:
+                    # Gestion de la structure de retour yfinance
+                    if len(self.tickers) == 1:
+                        df = raw_data.copy()
+                    else:
+                        if ticker not in raw_data.columns.levels[0]: continue
+                        df = raw_data[ticker].copy()
+                    
+                    df = df.dropna(subset=['Close'])
+                    
+                    if len(df) >= 200: # Minimum pour EMA200
+                        # Calcul de TOUS les indicateurs (Vecteurs Alpha)
+                        df = self._enrich_indicators(df)
+                        self.data_store[ticker] = df
+                    else:
+                        logger.warning(f"Historique insuffisant pour {ticker}")
+
+                except Exception as e:
+                    logger.error(f"Erreur sur le ticker {ticker}: {e}")
+            
+            self.last_sync = datetime.now()
+            return self.data_store
+
+        except Exception as e:
+            logger.error(f"Échec critique de synchronisation : {e}")
+            return {}
+
+    def _enrich_indicators(self, df):
+        """Calcule la matrice d'indicateurs propriétaires pour l'analyse technique."""
+        # Tendance
+        df['EMA20'] = ta.trend.EMAIndicator(df['Close'], window=20).ema_indicator()
+        df['EMA50'] = ta.trend.EMAIndicator(df['Close'], window=50).ema_indicator()
+        df['EMA200'] = ta.trend.EMAIndicator(df['Close'], window=200).ema_indicator()
+        
+        # Momentum & Volatilité
+        df['RSI'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
+        df['ATR'] = ta.volatility.AverageTrueRange(df['High'], df['Low'], df['Close'], window=14).average_true_range()
+        
+        # ADX (Force de tendance)
+        adx_ind = ta.trend.ADXIndicator(df['High'], df['Low'], df['Close'], window=14)
+        df['ADX'] = adx_ind.adx()
+        
+        # MACD (Accélération)
+        macd_obj = ta.trend.MACD(df['Close'])
+        df['MACD_Hist'] = macd_obj.macd_diff()
+
+        # Bollinger (Extrêmes)
+        bb = ta.volatility.BollingerBands(df['Close'], window=20)
+        df['BB_High'] = bb.bollinger_hband()
+        df['BB_Low'] = bb.bollinger_lband()
+        
+        # Distance EMA200
+        df['Dist_EMA200'] = ((df['Close'] / df['EMA200']) - 1) * 100
+        
+        return df
+
+    # --- SECTION : ANALYSE & DÉCISION (TRADING_BOT) ---
 
     def get_news_sentiment(self, ticker):
-        """
-        Analyse de sentiment textuelle basée sur les flux Yahoo Finance.
-        Aide à valider si la tendance haussière est soutenue par les fondamentaux.
-        """
+        """Scoring de sentiment basé sur Yahoo Finance."""
         try:
             stock = yf.Ticker(ticker)
             news = stock.news
-            if not news:
-                return "Neutre ⚪", 0
+            if not news: return "Neutre ⚪", 0
             
-            # Dictionnaire de mots-clés pour le scoring
             pos_words = ['hausse', 'croissance', 'achat', 'profit', 'contrat', 'succès', 'dividende', 'rebond']
             neg_words = ['chute', 'baisse', 'perte', 'alerte', 'déficit', 'litige', 'inflation', 'règlement']
             
@@ -43,138 +126,69 @@ class TradingBotV1Elite:
             
             label = "Positif ✅" if score > 0 else ("Négatif ⚠️" if score < 0 else "Neutre ⚪")
             return label, score
-        except Exception as e:
-            logger.warning(f"Sentiment non disponible pour {ticker}: {e}")
+        except Exception:
             return "Indisponible ❓", 0
 
-    def process_ticker(self, ticker):
-        """
-        Analyse technique profonde sur 2 ans d'historique.
-        L'intervalle journalier (1d) garantit la stabilité des données.
-        """
-        try:
-            # --- 1. ACQUISITION DES DONNÉES ---
-            # Utilisation stricte de l'intervalle '1d' pour éviter les erreurs 404/60j
-            df = yf.download(ticker, period="2y", interval="1d", progress=False, threads=False)
-
-            if df.empty or len(df) < 200:
-                logger.error(f"Données insuffisantes pour {ticker} (Min 200 jours requis)")
-                return None
-
-            # --- 2. INDICATEURS DE TENDANCE & PRÉDICTION ---
-            # EMA 200 : Tendance de fond (Support/Résistance psychologique)
-            df['EMA200'] = ta.trend.ema_indicator(df['Close'], window=200)
-            # EMA 50 : Tendance intermédiaire
-            df['EMA50'] = ta.trend.ema_indicator(df['Close'], window=50)
-            
-            # ADX (Average Directional Index) : Prédit la puissance de la tendance
-            # Un ADX > 25 indique que la tendance est solide et susceptible de durer
-            adx_indicator = ta.trend.ADXIndicator(df['High'], df['Low'], df['Close'], window=14)
-            df['ADX'] = adx_indicator.adx()
-            
-            # RSI : Détecte les zones de sur-achat ou de sur-vente
-            df['RSI'] = ta.momentum.rsi(df['Close'], window=14)
-            
-            # MACD : Mesure l'accélération du prix
-            macd_obj = ta.trend.MACD(df['Close'])
-            df['MACD_Hist'] = macd_obj.macd_diff()
-
-            # --- 3. EXTRACTION DES DONNÉES ACTUELLES ---
-            last_close = float(df['Close'].iloc[-1])
-            ema200 = float(df['EMA200'].iloc[-1])
-            ema50 = float(df['EMA50'].iloc[-1])
-            last_adx = float(df['ADX'].iloc[-1])
-            last_rsi = float(df['RSI'].iloc[-1])
-            last_macd_h = float(df['MACD_Hist'].iloc[-1])
-            prev_macd_h = float(df['MACD_Hist'].iloc[-2])
-
-            # Analyse du VIX (Indice de la peur) pour le risque global
-            vix_df = yf.download("^VIX", period="1d", progress=False)
-            vix_val = float(vix_df['Close'].iloc[-1]) if not vix_df.empty else 20.0
-            sentiment_label, sentiment_score = self.get_news_sentiment(ticker)
-
-            # --- 4. LOGIQUE DE PRÉDICTION (SCORE DE CONFIANCE) ---
-            prob = 0
-            
-            # Règle 1 : Prix au-dessus de la tendance long terme (EMA 200)
-            if last_close > ema200: prob += 30
-            
-            # Règle 2 : Croisement haussier (EMA 50 > EMA 200) - Golden Cross
-            if ema50 > ema200: prob += 20
-            
-            # Règle 3 : Force du mouvement (ADX > 25)
-            if last_adx > 25: prob += 20
-            
-            # Règle 4 : Accélération du momentum (MACD)
-            if last_macd_h > prev_macd_h: prob += 15
-            
-            # Règle 5 : RSI équilibré (pas encore en sur-achat)
-            if 40 <= last_rsi <= 65: prob += 10
-            
-            # Règle 6 : Marché serein (VIX)
-            if vix_val < 22: prob += 5
-
-            # --- 5. GESTION DU RISQUE (STOP LOSS DYNAMIQUE) ---
-            # Utilisation de l'ATR (Average True Range) pour s'adapter à la volatilité
-            df['ATR'] = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'])
-            last_atr = float(df['ATR'].iloc[-1])
-            
-            # Stop Loss à 2x l'ATR sous le prix actuel
-            sl_dist = last_atr * 2
-            sl_pct = (sl_dist / last_close) * 100
-            
-            # Objectif de gain (Take Profit) à 4x l'ATR (Ratio 1:2)
-            tp_price = last_close + (last_atr * 4)
-            potential_gain = ((tp_price / last_close) - 1) * 100
-
-            # --- 6. DÉCISION FINALE ---
-            action = "VEILLE"
-            if prob >= 75:
-                action = "ACHAT"
-            elif last_rsi > 80:
-                action = "VENTE"
-
-            info = yf.Ticker(ticker).info
-            
-            return {
-                'ticker': ticker,
-                'nom': info.get('shortName', ticker),
-                'secteur': info.get('sector', 'Inconnu'),
-                'prix': last_close,
-                'rsi': last_rsi,
-                'adx': last_adx,
-                'ema50': ema50,
-                'ema200': ema200,
-                'probabilite': prob,
-                'action': action,
-                'sentiment': sentiment_label,
-                'sl_pct': sl_pct,
-                'tp': tp_price,
-                'gain_pct': potential_gain,
-                'last_update': datetime.now().strftime("%Y-%m-%d %H:%M")
-            }
-
-        except Exception as e:
-            logger.error(f"Erreur d'analyse sur {ticker}: {e}")
-            return None
-
-    def plot_sectors(self, results):
-        """Visualise la répartition sectorielle des signaux d'achat."""
-        buys = [r['secteur'] for r in results if r['action'] == "ACHAT"]
-        if not buys: return None
+    def process_signals(self):
+        """Analyse les données synchronisées pour générer des signaux."""
+        results = []
         
-        plt.figure(figsize=(10, 6), facecolor='#0E1117')
-        counts = pd.Series(buys).value_counts()
-        plt.pie(counts, labels=counts.index, autopct='%1.1f%%', startangle=140, textprops={'color':"w"})
-        plt.title("Secteurs Dominants en Tendance Haussière", color="w")
+        # On télécharge le VIX une fois pour tout le groupe (économie de ressources)
+        vix_df = yf.download("^VIX", period="1d", progress=False)
+        vix_val = float(vix_df['Close'].iloc[-1]) if not vix_df.empty else 20.0
+
+        for ticker, df in self.data_store.items():
+            try:
+                # Récupération des dernières valeurs calculées par le moteur interne
+                last = df.iloc[-1]
+                prev = df.iloc[-2]
+                
+                prob = 0
+                # Règle 1 : Tendance de fond
+                if last['Close'] > last['EMA200']: prob += 30
+                # Règle 2 : Golden Cross
+                if last['EMA50'] > last['EMA200']: prob += 20
+                # Règle 3 : Puissance ADX
+                if last['ADX'] > 25: prob += 20
+                # Règle 4 : Momentum MACD
+                if last['MACD_Hist'] > prev['MACD_Hist']: prob += 15
+                # Règle 5 : RSI équilibré
+                if 40 <= last['RSI'] <= 65: prob += 10
+                # Règle 6 : Risque Marché
+                if vix_val < 22: prob += 5
+
+                # Gestion du risque ATR
+                sl_dist = last['ATR'] * 2
+                sl_pct = (sl_dist / last['Close']) * 100
+                tp_price = last['Close'] + (last['ATR'] * 4)
+                gain_pct = ((tp_price / last['Close']) - 1) * 100
+
+                action = "VEILLE"
+                if prob >= 75: action = "ACHAT"
+                elif last['RSI'] > 80: action = "VENTE"
+
+                sentiment_label, _ = self.get_news_sentiment(ticker)
+                
+                results.append({
+                    'ticker': ticker,
+                    'prix': last['Close'],
+                    'rsi': last['RSI'],
+                    'probabilite': prob,
+                    'action': action,
+                    'sentiment': sentiment_label,
+                    'sl_pct': sl_pct,
+                    'tp': tp_price,
+                    'gain_pct': gain_pct,
+                    'last_update': datetime.now().strftime("%Y-%m-%d %H:%M")
+                })
+
+            except Exception as e:
+                logger.error(f"Erreur d'analyse sur {ticker}: {e}")
         
-        path = "secteurs_opportunites.png"
-        plt.savefig(path)
-        plt.close()
-        return path
+        return results
 
     def send_notification(self, d):
-        """Envoie l'alerte de trading via NTFY."""
+        """Alerte via NTFY."""
         if d['action'] == "VEILLE": return
         
         title = f"SIGNAL {d['action']} : {d['ticker']} ({d['probabilite']}%)"
@@ -182,7 +196,6 @@ class TradingBotV1Elite:
             f"📈 Action : {d['action']}\n"
             f"📊 Confiance : {d['probabilite']}%\n"
             f"💵 Prix : {d['prix']:.2f}€\n"
-            f"💪 Force ADX : {d['adx']:.1f}\n"
             f"🛡️ Stop Loss : -{d['sl_pct']:.2f}%\n"
             f"🚀 Objectif : +{d['gain_pct']:.2f}%\n"
             f"📰 Sentiment : {d['sentiment']}"
