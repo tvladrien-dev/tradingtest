@@ -25,3 +25,5 @@ certifi>=2024.2.2      # Indispensable pour la validation des certificats SSL (Y
 plotly>=5.20.0
 # Matplotlib pour la génération de graphiques statiques (secteurs, exports images)
 matplotlib>=3.10.0
+
+streamlit-autorefresh
