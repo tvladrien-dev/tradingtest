@@ -9,18 +9,18 @@ import os
 from datetime import datetime
 
 # --- CONFIGURATION ENVIRONNEMENTALE CRITIQUE 2026 ---
-# Streamlit Cloud interdit l'écriture dans les dossiers système.
-# On force yfinance à utiliser /tmp pour éviter "OperationalError: database is locked".
+# Streamlit Cloud limite l'écriture. On force le cache dans /tmp pour éviter 
+# l'erreur "OperationalError: database is locked" liée à SQLite.
 try:
-    cache_dir = "/tmp/yf_cache_production"
+    cache_dir = "/tmp/yf_cache_v12"
     if not os.path.exists(cache_dir):
         os.makedirs(cache_dir)
     yf.set_tz_cache_location(cache_dir)
 except Exception as e:
-    # Fallback sécurisé
+    # Fallback si le système de fichiers est restreint
     pass
 
-# Logging professionnel pour le monitoring distant
+# Configuration du logging pour un monitoring précis en production
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -29,27 +29,27 @@ logger = logging.getLogger("TradingBotElite")
 
 class TradingBotV1Elite:
     """
-    QUANT MASTER v12.7.0 - ÉDITION DE PRODUCTION SANS SIMPLIFICATION
-    Moteur de trading algorithmique avec filtrage d'actifs et scoring Alpha.
+    QUANT MASTER v12.7.8 - ÉDITION DE PRODUCTION INTÉGRALE
+    Système expert de scan de marché avec scoring probabiliste et routage d'alertes.
     """
     
     def __init__(self, tickers=None):
         self.tickers = tickers if tickers else []
-        # Endpoint NTFY pour les alertes smartphone
-        self.ntfy_url = "https://ntfy.sh/votre_topic_secret_unique_2026"
+        # Endpoint NTFY pour les alertes mobiles (à personnaliser dans votre dashboard)
+        self.ntfy_url = "https://ntfy.sh/votre_topic_secret_unique_2026" 
         self.last_sync = None
         self.data_store = {}
         self.last_results = []
         logger.info("Bot Elite initialisé - Moteur de résilience 2026 opérationnel.")
 
-    # --- SECTION : ACQUISITION DE DONNÉES PAR LOTS (ANTI-BAN) ---
+    # --- SECTION : ACQUISITION ET NETTOYAGE DES DONNÉES (LOTS DE 40) ---
 
     def sync_market_data(self, period="2y", interval="1d"):
-        """Téléchargement par lots pour éviter le Rate Limit et gérer les 404/Delisted."""
+        """Téléchargement par lots pour contourner le Rate Limit et les erreurs 404."""
         if not self.tickers:
             return {}
 
-        # Blacklist consolidée basée sur les logs d'erreurs récents
+        # Blacklist dynamique basée sur vos logs (actifs délistés ou corrompus)
         blacklist = [
             'POL-USD', 'COMP-USD', 'GRT-USD', 'MNT-USD', 'ALT-USD', 
             'BOUY.PA', 'EXO.PA', 'FDJ.PA', 'TRIA.PA', 'ALMD.PA', 'LUM=F',
@@ -60,11 +60,11 @@ class TradingBotV1Elite:
 
         logger.info(f"Synchronisation de {len(active_tickers)} actifs par lots de 40...")
         
+        # Partitionnement pour éviter de saturer les serveurs de Yahoo Finance
         chunk_size = 40
         for i in range(0, len(active_tickers), chunk_size):
             chunk = active_tickers[i:i + chunk_size]
             try:
-                # Utilisation de threads=True pour maximiser la vitesse de traitement
                 raw_data = yf.download(
                     tickers=chunk,
                     period=period,
@@ -77,7 +77,7 @@ class TradingBotV1Elite:
 
                 for ticker in chunk:
                     try:
-                        # Extraction robuste selon la structure MultiIndex de yfinance
+                        # Gestion de l'extraction selon le format (Single Ticker vs MultiIndex)
                         if len(chunk) == 1:
                             df = raw_data.copy()
                         else:
@@ -87,42 +87,42 @@ class TradingBotV1Elite:
                         
                         df = df.dropna(subset=['Close'])
                         
-                        # Le Bot nécessite au moins 200 jours pour l'EMA200
+                        # Validation de la profondeur historique pour EMA200
                         if len(df) >= 200:
                             self.data_store[ticker] = self._enrich_indicators(df)
-                    except Exception as e:
+                    except Exception:
                         continue
                 
                 # Sommeil de sécurité (Anti-Rate Limit)
-                time.sleep(1.2)
+                time.sleep(1.5)
                 
             except Exception as e:
-                logger.error(f"Erreur sur le lot {i} : {e}")
+                logger.error(f"Échec sur le lot commençant par {chunk[0]} : {e}")
 
         self.last_sync = datetime.now()
         return self.data_store
 
     def _enrich_indicators(self, df):
-        """Calcul exhaustif de la matrice d'indicateurs Alpha Matrix."""
-        # --- Tendance ---
+        """Calcul exhaustif de la matrice d'indicateurs (Alpha Matrix)."""
+        # Tendances (EMA)
         df['EMA50'] = ta.trend.EMAIndicator(df['Close'], window=50).ema_indicator()
         df['EMA200'] = ta.trend.EMAIndicator(df['Close'], window=200).ema_indicator()
         
-        # --- Momentum ---
+        # Momentum & Force (RSI / ADX)
         df['RSI'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
         df['ADX'] = ta.trend.ADXIndicator(df['High'], df['Low'], df['Close'], window=14).adx()
         
-        # --- Volatilité & Accélération ---
+        # Volatilité & Accélération (ATR / MACD)
         df['ATR'] = ta.volatility.AverageTrueRange(df['High'], df['Low'], df['Close'], window=14).average_true_range()
         macd = ta.trend.MACD(df['Close'])
         df['MACD_Hist'] = macd.macd_diff()
         
         return df
 
-    # --- SECTION : LOGIQUE DE SCORING ET DÉCISION ---
+    # --- SECTION : ANALYSE DE SENTIMENT ET SCORING PROBABILISTE ---
 
     def get_news_sentiment(self, ticker):
-        """Scoring sémantique des actualités financières pour validation du signal."""
+        """Extraction et analyse sémantique des news Yahoo Finance."""
         try:
             stock = yf.Ticker(ticker)
             news = getattr(stock, 'news', [])
@@ -143,10 +143,10 @@ class TradingBotV1Elite:
             return "Neutre ⚪", 0
 
     def process_signals(self):
-        """Moteur de scoring probabiliste (Base 100) compatible Pandas 2.3+."""
+        """Moteur de décision probabiliste avec protection Pandas 2.3+."""
         results = []
         
-        # Contexte de marché (VIX)
+        # Acquisition du VIX pour filtrer les périodes de panique globale
         try:
             vix_df = yf.download("^VIX", period="1d", progress=False)
             vix_val = float(vix_df['Close'].iloc[-1].item()) if not vix_df.empty else 22.0
@@ -159,7 +159,7 @@ class TradingBotV1Elite:
                 last = df.iloc[-1]
                 prev = df.iloc[-2]
                 
-                # Conversion scalaire sécurisée (.item()) pour éviter les FutureWarnings
+                # Conversion scalaire via .item() pour éviter les erreurs de type Series
                 price = float(last['Close'].item())
                 rsi_val = float(last['RSI'].item())
                 adx_val = float(last['ADX'].item())
@@ -169,7 +169,7 @@ class TradingBotV1Elite:
                 prev_macd_h = float(prev['MACD_Hist'].item())
                 atr = float(last['ATR'].item())
 
-                # Algorithme de Scoring Propriétaire
+                # Algorithme de Scoring Propriétaire (Base 100)
                 prob = 0
                 if price > ema200: prob += 30
                 if ema50 > ema200: prob += 20
@@ -178,7 +178,7 @@ class TradingBotV1Elite:
                 if 40 <= rsi_val <= 65: prob += 10
                 if vix_val < 22: prob += 5
 
-                # Risk Management (SL: 2*ATR, TP: 4*ATR)
+                # Risk Management : Stop-Loss (2x ATR) et Take-Profit (4x ATR)
                 sl_pct = ((atr * 2) / price) * 100
                 tp_price = price + (atr * 4)
                 gain_pct = ((atr * 4) / price) * 100
@@ -187,7 +187,7 @@ class TradingBotV1Elite:
                 if prob >= 75: action = "ACHAT"
                 elif rsi_val > 80: action = "VENTE"
 
-                sentiment_label, _ = self.get_news_sentiment(ticker)
+                sentiment, _ = self.get_news_sentiment(ticker)
                 
                 results.append({
                     'ticker': ticker,
@@ -195,7 +195,7 @@ class TradingBotV1Elite:
                     'rsi': round(rsi_val, 2),
                     'probabilite': prob,
                     'action': action,
-                    'sentiment': sentiment_label,
+                    'sentiment': sentiment,
                     'sl_pct': round(sl_pct, 2),
                     'tp': round(tp_price, 2),
                     'gain_pct': round(gain_pct, 2),
@@ -204,42 +204,42 @@ class TradingBotV1Elite:
             except Exception:
                 continue
         
-        # Tri par probabilité de succès
         self.last_results = sorted(results, key=lambda x: x['probabilite'], reverse=True)
         return self.last_results
 
-    # --- SECTION : SYSTÈME DE NOTIFICATIONS (API REQUESTS) ---
+    # --- SECTION : NOTIFICATIONS ET UTILITAIRES ---
 
     def send_notification(self, signal):
-        """Envoi des alertes vers smartphone via NTFY (Requis par app.py)."""
+        """Envoi de l'alerte Push via NTFY (Requis par app.py)."""
         if signal['action'] == "VEILLE":
             return False
             
         emoji = "🚀" if signal['action'] == "ACHAT" else "⚠️"
         title = f"{emoji} {signal['action']} : {signal['ticker']} ({signal['probabilite']}%)"
-        message = (f"💰 Prix: {signal['prix']}€\n"
-                  f"🛡️ SL: -{signal['sl_pct']}% | TP: +{signal['gain_pct']}%")
+        body = (
+            f"💰 Prix: {signal['prix']}€\n"
+            f"🛡️ SL: -{signal['sl_pct']}% | TP: +{signal['gain_pct']}%"
+        )
         
         try:
             res = requests.post(
                 self.ntfy_url,
-                data=message.encode('utf-8'),
+                data=body.encode('utf-8'),
                 headers={
                     "Title": title.encode('utf-8'),
                     "Priority": "high",
-                    "Tags": "chart_with_upwards_trend,moneybag"
+                    "Tags": "chart_with_upwards_trend,money"
                 },
                 timeout=5
             )
             return res.status_code == 200
-        except Exception as e:
-            logger.error(f"Erreur notification {signal['ticker']} : {e}")
+        except Exception:
             return False
 
     def get_last_signals(self):
-        """Retourne les signaux en cache pour l'UI."""
+        """Récupération des signaux en cache pour l'interface Streamlit."""
         return self.last_results if self.last_results else self.process_signals()
 
     def get_data_for_ticker(self, ticker):
-        """Retourne les données brutes pour les graphiques Plotly."""
+        """Expose le DataFrame historique pour les graphiques Plotly."""
         return self.data_store.get(ticker)
