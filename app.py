@@ -5,196 +5,203 @@ from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 from engine.trading_bot import TradingBotV1Elite
 
-# --- CONFIGURATION DE LA PAGE ---
+# --- 1. CONFIGURATION DE LA PAGE ---
 st.set_page_config(
-    page_title="QUANT MASTER V1 | Terminal Elite",
+    page_title="QUANT MASTER V1 | Elite Terminal",
     page_icon="⚖️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- STYLE CSS PERSONNALISÉ (POUR UN LOOK PRO) ---
+# --- 2. STYLE CSS PERSONNALISÉ (TERMINAL LOOK) ---
 st.markdown("""
     <style>
-    .stMetric { background-color: #1e2130; padding: 15px; border-radius: 10px; border: 1px solid #3d4156; }
-    .stExpander { border: 1px solid #3d4156 !important; background-color: #0e1117 !important; }
-    .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #262730; }
+    /* Style des métriques */
+    [data-testid="stMetric"] {
+        background-color: #1e2130;
+        padding: 15px;
+        border-radius: 12px;
+        border: 1px solid #3d4156;
+    }
+    /* Style des expanders */
+    .stExpander {
+        border: 1px solid #3d4156 !important;
+        background-color: #0e1117 !important;
+        border-radius: 8px !important;
+    }
+    /* Boutons personnalisés */
+    .stButton>button {
+        width: 100%;
+        border-radius: 8px;
+        height: 3em;
+        font-weight: bold;
+        transition: 0.3s;
+    }
+    .stButton>button:hover {
+        border-color: #00cc96;
+        color: #00cc96;
+    }
     </style>
     """, unsafe_allow_html=True)
 
-# --- AUTO-REFRESH (5 MINUTES) ---
+# --- 3. AUTO-REFRESH (TEMPS RÉEL : 5 MINUTES) ---
 st_autorefresh(interval=300000, key="bot_refresh_loop")
 
-# --- INITIALISATION DU MOTEUR ---
+# --- 4. INITIALISATION & FUSION DES UNIVERS ---
 @st.cache_resource
 def init_bot():
     """
-    Fusionne les tickers des 3 fichiers de config : cryptos, pea_stocks, commodities.
+    Importe et fusionne les tickers depuis commodities.py, cryptos.py et pea_stocks.py.
     """
-    all_tickers = []
-    sources = {"Cryptos": 0, "Actions PEA": 0, "Matières Premières": 0}
+    combined_tickers = []
+    market_counts = {"Cryptos": 0, "PEA": 0, "Commodities": 0}
     
+    # Extraction sécurisée des tickers
     try:
-        # Import des listes spécifiques
-        try:
-            from config.cryptos import CRYPTO_TICKERS
-            all_tickers += CRYPTO_TICKERS
-            sources["Cryptos"] = len(CRYPTO_TICKERS)
-        except ImportError: pass
-        
-        try:
-            from config.pea_stocks import PEA_TICKERS
-            all_tickers += PEA_TICKERS
-            sources["Actions PEA"] = len(PEA_TICKERS)
-        except ImportError: pass
-        
-        try:
-            from config.commodities import COMMODITIES_TICKERS
-            all_tickers += COMMODITIES_TICKERS
-            sources["Matières Premières"] = len(COMMODITIES_TICKERS)
-        except ImportError: pass
+        from config.cryptos import CRYPTO_UNIVERSE
+        t_crypto = [item['ticker'] for item in CRYPTO_UNIVERSE]
+        combined_tickers.extend(t_crypto)
+        market_counts["Cryptos"] = len(t_crypto)
+    except Exception: pass
 
-        # Nettoyage des doublons
-        all_tickers = list(set(all_tickers))
-        
-        if not all_tickers:
-            all_tickers = ["BTC-USD", "ETH-USD", "GC=F", "AIR.PA", "MC.PA"] # Secours ultime
-            
-        bot_instance = TradingBotV1Elite(tickers=all_tickers)
-        return bot_instance, sources
-        
-    except Exception as e:
-        st.error(f"Erreur fatale d'initialisation : {e}")
-        return TradingBotV1Elite(tickers=["BTC-USD"]), sources
+    try:
+        from config.pea_stocks import PEA_UNIVERSE
+        t_pea = [item['ticker'] for item in PEA_UNIVERSE]
+        combined_tickers.extend(t_pea)
+        market_counts["PEA"] = len(t_pea)
+    except Exception: pass
 
-# Chargement du bot et des stats sources
-bot, source_stats = init_bot()
+    try:
+        from config.commodities import COMMODITIES_UNIVERSE
+        t_comm = [item['ticker'] for item in COMMODITIES_UNIVERSE]
+        combined_tickers.extend(t_comm)
+        market_counts["Commodities"] = len(t_comm)
+    except Exception: pass
 
-# --- BARRE LATÉRALE (SIDEBAR) ---
+    # Nettoyage et Instanciation
+    final_list = list(set(combined_tickers))
+    if not final_list:
+        final_list = ["BTC-USD", "ETH-USD", "AIR.PA"] # Secours minimal
+        
+    return TradingBotV1Elite(tickers=final_list), market_counts
+
+bot, counts = init_bot()
+
+# --- 5. BARRE LATÉRALE (SIDEBAR) ---
 with st.sidebar:
-    st.image("https://img.icons8.com/fluency/96/bullish.png", width=80)
-    st.title("CONTRÔLE V1 ELITE")
-    st.markdown(f"🗓️ **{datetime.now().strftime('%d %b %Y')}**")
-    st.markdown(f"⏰ **{datetime.now().strftime('%H:%M:%S')}**")
+    st.image("https://img.icons8.com/fluency/96/diamond.png", width=60)
+    st.title("Elite Control")
+    st.markdown(f"**Flux :** Synchronisé ✅")
+    st.markdown(f"**Dernier Scan :** {datetime.now().strftime('%H:%M:%S')}")
     
     st.divider()
-    st.subheader("📦 Actifs par Catégories")
-    for cat, count in source_stats.items():
-        st.write(f"• {cat} : `{count}`")
+    st.subheader("📊 Inventaire des Actifs")
+    st.write(f"🪙 Cryptomonnaies : `{counts['Cryptos']}`")
+    st.write(f"🇪🇺 Actions PEA : `{counts['PEA']}`")
+    st.write(f"🛢️ Commodities : `{counts['Commodities']}`")
+    st.info(f"Total : {sum(counts.values())} actifs analysés")
     
     st.divider()
-    if st.button("🔄 RE-SCANNER LE MARCHÉ"):
+    if st.button("🔄 FORCER RE-SCAN"):
         st.cache_resource.clear()
         st.rerun()
     
     st.divider()
-    st.info("""
-    **STRATÉGIE V1**
-    - Achat : RSI ≤ 35 + EMA 200
-    - Vente : RSI > 75
-    - Risk : ATR x2 Suiveur
-    """)
+    st.caption("Stratégie V1 Elite : RSI < 35, EMA 200, Sentiment News, VIX Macro.")
 
-# --- TITRE ET RÉSUMÉ DES PERFORMANCES ---
-st.title("⚖️ QUANT MASTER V1 : Tendance & Sentiment")
+# --- 6. ENTÊTE PRINCIPALE ---
+st.title("🛡️ QUANT MASTER V1 : Intelligence de Marché")
+st.caption("Analyse de tendance saine et détection de survente sur 340+ actifs mondiaux.")
 st.markdown("---")
 
-# --- MOTEUR DE SCAN ---
-with st.spinner("Analyse quantitative des 340+ actifs en cours..."):
+# --- 7. EXÉCUTION DU MOTEUR ---
+with st.spinner("Analyse quantitative et sentimentale en cours..."):
     bot.sync_market_data()
     signals = bot.process_signals()
 
-# INDICATEURS MACRO (METRICS)
-col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-with col_m1:
+# --- 8. DASHBOARD MÉTRIQUES ---
+m1, m2, m3, m4 = st.columns(4)
+with m1:
     achats = [s for s in signals if s['action'] == "ACHAT"]
-    st.metric("🎯 SIGNAUX D'ACHAT", len(achats))
-with col_m2:
+    st.metric("📦 ORDRES ACHAT", len(achats))
+with m2:
     ventes = [s for s in signals if s['action'] == "VENTE"]
-    st.metric("🔴 SIGNAUX DE VENTE", len(ventes))
-with col_m3:
-    vix_val = signals[0]['vix'] if signals else 20.0
-    st.metric("📉 INDICE VIX (PEUR)", vix_val, delta="- stable" if vix_val < 25 else "+ Alerte")
-with col_m4:
-    st.metric("🔄 SCAN GLOBAL", f"{len(signals)} actifs")
+    st.metric("🔴 ORDRES VENTE", len(ventes))
+with m3:
+    vix_val = signals[0]['vix'] if signals else 0
+    st.metric("📉 INDICE VIX", vix_val, 
+              delta="Marché Calme" if vix_val < 20 else "Alerte Volatilité", 
+              delta_color="inverse")
+with m4:
+    st.metric("🔄 SCAN GLOBAL", f"{len(signals)} Actifs")
 
 st.divider()
 
-# --- SECTION 1 : OPPORTUNITÉS PRIORITAIRES ---
-st.subheader("🚀 Opportunités Prioritaires (RSI < 35)")
+# --- 9. OPPORTUNITÉS PRIORITAIRES (ACHATS/VENTES) ---
+st.subheader("🎯 Opportunités de Trading (Priorité RSI < 35)")
 
 priorites = [s for s in signals if s['action'] in ["ACHAT", "VENTE"]]
 
 if not priorites:
-    st.warning("Aucun signal détecté sur les critères RSI < 35 / EMA 200.")
+    st.warning("Aucun signal d'achat/vente détecté. Le bot surveille les niveaux de survente.")
 else:
     for s in priorites:
-        # Couleur dynamique selon l'action
-        if s['action'] == "ACHAT":
-            tag_label = "🟢 SIGNAL ACHAT"
-            border_color = "green"
-        else:
-            tag_label = "🔴 SIGNAL VENTE"
-            border_color = "red"
+        # Couleur et icône dynamiques
+        color = "🟢" if s['action'] == "ACHAT" else "🔴"
+        
+        with st.expander(f"{color} **{s['action']}** | {s['nom']} ({s['ticker']}) — Score Confiance : {s['probabilite']}%", expanded=(s['action']=="ACHAT")):
+            col_a, col_b, col_c = st.columns([1, 1, 1])
             
-        with st.expander(f"{tag_label} | {s['nom']} ({s['ticker']}) — Score : {s['probabilite']}%", expanded=(s['action']=="ACHAT")):
-            col_left, col_mid, col_right = st.columns([1.2, 1, 1])
+            with col_a:
+                st.markdown("**🔍 Technique**")
+                st.write(f"Prix : `{s['prix']} €/$`")
+                st.write(f"RSI (14j) : `{s['rsi']}`")
+                st.write(f"EMA 200 : `{s['ema200']} €/$`")
+                st.write(f"MACD : `{s['macd']}`")
             
-            with col_left:
-                st.markdown("**📊 Données Techniques**")
-                st.markdown(f"""
-                - **Prix Actuel :** `{s['prix']} €/$`
-                - **RSI (14j) :** `{s['rsi']}` (Seuil : 35)
-                - **EMA 200 :** `{s['ema200']} €/$`
-                - **Momentum :** `MACD {s['macd']}`
-                """)
+            with col_b:
+                st.markdown("**🌍 Analyse Contextuelle**")
+                st.write(f"Secteur : `{s['sector']}`")
+                st.write(f"Sentiment : **{s['sentiment']}**")
+                st.write(f"Tendance : `Haussière Long Terme ✅`")
             
-            with col_mid:
-                st.markdown("**🌍 Intelligence Marché**")
-                st.markdown(f"""
-                - **Sentiment :** {s['sentiment']}
-                - **Secteur :** `{s['sector']}`
-                - **Macro :** `VIX {s['vix']}`
-                - **Tendance :** `Saine ✅`
-                """)
+            with col_c:
+                st.markdown("**🛡️ Gestion & Risque**")
+                st.success(f"Objectif TP : **{s['tp']} €/$**")
+                st.error(f"Stop Loss : **-{s['sl_pct']}%**")
+                st.info(f"Potentiel : **+{s['gain_pct']}%**")
                 
-            with col_right:
-                st.markdown("**🛡️ Gestion du Risque**")
-                st.success(f"**TP (Cible) : {s['tp']} €/$**")
-                st.error(f"**Stop Loss : -{s['sl_pct']}%**")
-                st.info(f"**Ratio Reward : +{s['gain_pct']}%**")
-                
-                if st.button(f"ALERTE NTFY : {s['ticker']}", key=f"ntfy_{s['ticker']}"):
+                if st.button(f"Envoyer Alerte : {s['ticker']}", key=f"ntfy_{s['ticker']}"):
                     if bot.send_notification(s):
-                        st.toast(f"Notification envoyée pour {s['ticker']} !")
+                        st.toast(f"Alerte envoyée pour {s['ticker']} !", icon="🚀")
 
-# --- SECTION 2 : VISUALISATION DATA ---
+# --- 10. VISUALISATION ANALYTIQUE ---
 st.divider()
-c_chart1, c_chart2 = st.columns([1.5, 1])
+c1, c2 = st.columns(2)
 
-with c_chart1:
-    st.subheader("📊 Distribution Sectorielle des Signaux")
+with c1:
+    st.subheader("📊 Répartition Sectorielle")
     if priorites:
-        df_viz = pd.DataFrame(priorites)
-        fig = px.bar(df_viz, x='sector', color='action', 
-                     barmode='group', color_discrete_map={'ACHAT':'#00cc96', 'VENTE':'#ef553b'},
-                     template="plotly_dark")
-        st.plotly_chart(fig, width="stretch")
+        df_prio = pd.DataFrame(priorites)
+        fig_bar = px.bar(df_prio, x='sector', color='action', barmode='group',
+                         color_discrete_map={'ACHAT':'#00cc96', 'VENTE':'#ef553b'},
+                         template="plotly_dark")
+        st.plotly_chart(fig_bar, width="stretch")
     else:
-        st.info("Attente de signaux pour graphique.")
+        st.info("Données sectorielles en attente de signaux.")
 
-with c_chart2:
-    st.subheader("💡 Force du Sentiment")
-    if priorites:
-        fig_pie = px.pie(df_viz, names='sentiment', hole=0.5, template="plotly_dark")
-        st.plotly_chart(fig_pie, width="stretch")
+with c2:
+    st.subheader("🧬 Équilibre de l'Univers")
+    fig_pie = px.pie(values=list(counts.values()), names=list(counts.keys()), 
+                     hole=0.4, template="plotly_dark",
+                     color_discrete_sequence=px.colors.qualitative.Pastel)
+    st.plotly_chart(fig_pie, width="stretch")
 
-# --- SECTION 3 : TABLEAU DE SURVEILLANCE GLOBAL ---
+# --- 11. TERMINAL COMPLET (TABLEAU DE VEILLE) ---
 st.divider()
-st.subheader("🔍 Terminal de Veille Temps Réel")
+st.subheader("🔍 Tableau de Veille Global (Temps Réel)")
 df_full = pd.DataFrame(signals)
 if not df_full.empty:
-    # Stylisation du tableau
     st.dataframe(
         df_full[['ticker', 'nom', 'action', 'probabilite', 'prix', 'rsi', 'sentiment', 'sector']],
         width="stretch",
@@ -202,4 +209,4 @@ if not df_full.empty:
     )
 
 st.markdown("---")
-st.caption(f"QUANT MASTER V1 ELITE TERMINAL | Powered by Python 3.13 | {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+st.caption(f"Quant Master V1 Elite Terminal • 2026 • Dernière synchronisation : {datetime.now().strftime('%H:%M:%S')}")
