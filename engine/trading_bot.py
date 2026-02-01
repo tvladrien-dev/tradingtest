@@ -9,47 +9,42 @@ import os
 from datetime import datetime
 
 # --- CONFIGURATION ENVIRONNEMENTALE ---
-# Crucial pour Streamlit Cloud : Redirection du cache SQLite vers /tmp
 try:
-    cache_dir = "/tmp/yf_cache_v1_elite"
+    # Indispensable sur Streamlit Cloud pour éviter les erreurs de base de données verrouillée
+    cache_dir = "/tmp/yf_cache_v1_final"
     if not os.path.exists(cache_dir):
         os.makedirs(cache_dir)
     yf.set_tz_cache_location(cache_dir)
 except Exception:
     pass
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("TradingBot_V1_Elite")
 
 class TradingBotV1Elite:
     """
-    QUANT MASTER V1.0 - ÉDITION DE PRODUCTION
-    Analyse Multi-Facteurs : Technique, Graphique, Sentiment et Macro.
+    QUANT MASTER V1 - VERSION FULL PRODUCTION
+    Analyse : EMA200 + Higher Lows + Sentiment News + Macro VIX + ATR Trail SL
     """
     
     def __init__(self, tickers=None):
         self.tickers = tickers if tickers else []
-        # Endpoint NTFY (Remplacez par votre topic personnel)
-        self.ntfy_url = "https://ntfy.sh/votre_topic_secret_2026" 
+        # URL NTFY - À personnaliser dans votre application
+        self.ntfy_url = "https://ntfy.sh/votre_topic_unique_2026" 
         self.data_store = {}
         self.last_results = []
-        logger.info("Bot V1 Initialisé : Prêt pour l'analyse en temps réel.")
+        logger.info("Bot V1 Elite initialisé - En attente de signaux confirmés.")
 
-    # --- SECTION : ACQUISITION MASSIVE ET NETTOYAGE ---
+    # --- ÉTAPE 1 : ACQUISITION MASSIVE ---
 
     def sync_market_data(self, period="2y", interval="1d"):
-        """Synchronisation par lots de 40 pour éviter les bannissements d'IP."""
+        """Téléchargement par lots de 40 pour la résilience API."""
         if not self.tickers: return {}
 
-        # Nettoyage automatique des actifs délistés identifiés dans vos logs
-        blacklist = ['POL-USD', 'TAO-USD', 'AXL-USD', 'RON-USD', 'BRETT-USD', 'PEPE-USD']
+        # Exclusion des actifs identifiés comme problématiques dans les logs récents
+        blacklist = ['POL-USD', 'TAO-USD', 'AXL-USD', 'RON-USD', 'BRETT-USD']
         active_tickers = [t for t in self.tickers if t not in blacklist]
 
-        logger.info(f"Début du scan : {len(active_tickers)} actifs par lots de 40.")
-        
         chunk_size = 40
         for i in range(0, len(active_tickers), chunk_size):
             chunk = active_tickers[i:i + chunk_size]
@@ -61,85 +56,88 @@ class TradingBotV1Elite:
 
                 for ticker in chunk:
                     try:
-                        # Gestion de l'extraction (MultiIndex vs Single DataFrame)
-                        df = raw_data[ticker].copy() if len(chunk) > 1 else raw_data.copy()
+                        # Extraction sécurisée (MultiIndex ou DataFrame simple)
+                        if len(chunk) == 1:
+                            df = raw_data.copy()
+                        else:
+                            if ticker not in raw_data.columns.levels[0]: continue
+                            df = raw_data[ticker].copy()
+                        
                         df = df.dropna(subset=['Close'])
                         
-                        # Validation technique : EMA200 requiert 200 périodes
+                        # Validation technique : EMA200 nécessite 200 points
                         if len(df) >= 200:
-                            self.data_store[ticker] = self._enrich_indicators(df)
-                    except Exception:
-                        continue
+                            self.data_store[ticker] = self._calculate_v1_indicators(df)
+                    except Exception: continue
                 
-                # Pause Anti-Rate Limit
-                time.sleep(1.2)
+                time.sleep(1.2) # Pause anti-bannissement
             except Exception as e:
-                logger.error(f"Échec sur le lot {i} : {e}")
+                logger.error(f"Erreur Sync Lot {i}: {e}")
         
         return self.data_store
 
-    def _enrich_indicators(self, df):
-        """Calcul de la matrice technique complète."""
-        # --- Tendance Majeure ---
+    def _calculate_v1_indicators(self, df):
+        """Calcul des indicateurs de la stratégie V1."""
+        # Tendance Majeure
         df['EMA200'] = ta.trend.EMAIndicator(df['Close'], window=200).ema_indicator()
         
-        # --- Analyse Graphique (Confirmation de Tendance : Higher Lows sur 10j) ---
+        # Analyse Graphique : Confirmation des creux ascendants (Higher Lows sur 10j)
         df['low_rolling'] = df['Low'].rolling(window=10).min()
-        df['is_uptrend'] = df['low_rolling'] >= df['low_rolling'].shift(10)
+        df['is_uptrend'] = df['low_rolling'] >= df['low_rolling'].shift(5)
         
-        # --- Momentum & Force ---
+        # Momentum & Force
         df['RSI'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
         macd = ta.trend.MACD(df['Close'])
         df['MACD'] = macd.macd()
         df['MACD_Hist'] = macd.macd_diff()
         
-        # --- Volatilité (ATR pour Risk Management) ---
+        # Volatilité (Base du Stop Loss Suiveur)
         df['ATR'] = ta.volatility.AverageTrueRange(df['High'], df['Low'], df['Close'], window=14).average_true_range()
         
         return df
 
-    # --- SECTION : ANALYSE DU CONTEXTE MONDIAL ---
+    # --- ÉTAPE 2 : ANALYSE DU MONDE (SENTIMENT & INFOS) ---
 
-    def get_contextual_data(self, ticker):
-        """Analyse de sentiment (Actualités) et collecte des infos fondamentales."""
+    def get_market_intelligence(self, ticker):
+        """Analyse sémantique des actualités mondiales et données sectorielles."""
         try:
             stock = yf.Ticker(ticker)
             info = stock.info
             news = getattr(stock, 'news', [])
             
+            # Algorithme de sentiment NLP simplifié
             score = 0
-            pos_words = {'profit', 'croissance', 'achat', 'hausse', 'positif', 'gain', 'upgrade'}
-            neg_words = {'chute', 'baisse', 'perte', 'alerte', 'négatif', 'faillite', 'downgrade'}
+            pos = {'profit', 'growth', 'buy', 'positive', 'gain', 'croissance', 'achat', 'succès'}
+            neg = {'loss', 'fall', 'alert', 'negative', 'crash', 'baisse', 'alerte', 'déficit'}
             
             for item in news[:5]:
                 title = item.get('title', '').lower()
-                score += sum(1 for w in pos_words if w in title)
-                score -= sum(1 for w in neg_words if w in title)
+                score += sum(1 for w in pos if w in title)
+                score -= sum(1 for w in neg if w in title)
             
             sentiment = "Positif ✅" if score > 0 else ("Négatif ⚠️" if score < 0 else "Neutre ⚪")
             return sentiment, info.get('sector', 'Divers'), info.get('longName', ticker)
         except:
             return "Neutre ⚪", "Inconnu", ticker
 
-    # --- SECTION : MOTEUR DE DÉCISION (SCORING V1) ---
+    # --- ÉTAPE 3 : MOTEUR DE DÉCISION ET TRI ---
 
     def process_signals(self):
-        """Moteur de scoring : Technique + Graphique + Macro + Sentiment."""
+        """Analyse probabiliste V1 : Technique + Graphique + Macro + News."""
         results = []
         
-        # Filtre Macro : Indice VIX (Le thermomètre de la peur)
+        # Filtre Macro Global : Indice VIX
         try:
             vix_df = yf.download("^VIX", period="1d", progress=False)
             vix_val = float(vix_df['Close'].iloc[-1].item())
-        except:
-            vix_val = 22.0
+        except: vix_val = 22.0
 
         for ticker, df in self.data_store.items():
             try:
                 last = df.iloc[-1]
                 prev = df.iloc[-2]
                 
-                # Conversion scalaire sécurisée (.item())
+                # Conversion sécurisée en scalaires
                 price = float(last['Close'].item())
                 ema200 = float(last['EMA200'].item())
                 rsi = float(last['RSI'].item())
@@ -148,29 +146,29 @@ class TradingBotV1Elite:
                 atr = float(last['ATR'].item())
                 is_uptrend = bool(last['is_uptrend'])
 
-                # --- ALGORITHME DE SCORING ALPHA (Base 100) ---
+                # --- ALGORITHME DE SCORING V1 (Base 100) ---
                 prob = 0
-                if price > ema200: prob += 35         # Santé de la tendance
-                if is_uptrend: prob += 25             # Confirmation graphique
-                if 40 <= rsi <= 65: prob += 15        # Momentum non-saturé
-                if macd_h > prev['MACD_Hist']: prob += 15 # Accélération MACD
-                if vix_val < 25: prob += 10           # Calme macro-économique
+                if price > ema200: prob += 35         # Règle d'or : Au-dessus de l'EMA200
+                if is_uptrend: prob += 25             # Confirmation graphique (Higher Lows)
+                if 40 <= rsi <= 65: prob += 15        # RSI en zone de rebond saine
+                if macd_h > prev['MACD_Hist']: prob += 15 # Accélération haussière
+                if vix_val < 25: prob += 10           # Marché global serein
 
                 # --- RISK MANAGEMENT (ATR x2) ---
-                sl_amount = atr * 2
-                sl_pct = round((sl_amount / price) * 100, 2)
-                # Objectif Gain : Ratio 1:2 par rapport au risque
+                sl_distance = atr * 2
+                sl_pct = round((sl_distance / price) * 100, 2)
+                # Objectif de gain : Ratio 1:2 (On cherche 2x plus que le risque)
                 gain_vise_pct = sl_pct * 2
                 tp_price = round(price * (1 + gain_vise_pct/100), 2)
 
-                # Classification de l'action
+                # Logique d'action
                 action = "VEILLE"
                 if prob >= 75 and vix_val < 30: 
                     action = "ACHAT"
                 elif rsi > 80: 
                     action = "VENTE"
 
-                sentiment, sector, nom = self.get_contextual_data(ticker)
+                sentiment, sector, nom = self.get_market_intelligence(ticker)
 
                 results.append({
                     'ticker': ticker, 'nom': nom, 'prix': round(price, 2),
@@ -179,33 +177,36 @@ class TradingBotV1Elite:
                     'sl_pct': sl_pct, 'tp': tp_price, 'gain_pct': round(gain_vise_pct, 2),
                     'sector': sector, 'sentiment': sentiment
                 })
-            except Exception:
-                continue
+            except Exception: continue
         
-        # TRI FINAL : Priorité ACHAT > VENTE > Probabilité
+        # --- TRI FINAL DEMANDÉ ---
+        # 1. ACHAT en priorité, puis VENTE
+        # 2. Tri par Probabilité décroissante (les plus sûrs en haut)
         results.sort(key=lambda x: (x['action'] != 'ACHAT', x['action'] != 'VENTE', -x['probabilite']))
         self.last_results = results
         return results
 
-    # --- SECTION : NOTIFICATIONS NTFY ENRICHIES ---
+    # --- ÉTAPE 4 : NOTIFICATIONS ENRICHIES ---
 
     def send_notification(self, s):
-        """Envoi de l'alerte complète avec tous les détails demandés."""
+        """Envoi de l'alerte NTFY avec le format complet exigé."""
         if s['action'] == "VEILLE": return False
         
         emoji = "🚀" if s['action'] == "ACHAT" else "⚠️"
         title = f"{emoji} {s['action']} : {s['ticker']} ({s['probabilite']}%)"
         
+        # Construction du message riche
         message = (
-            f"Nom: {s['nom']}\n"
-            f"Prix: {s['prix']}€ | EMA200: {s['ema200']}\n"
-            f"RSI: {s['rsi']} | MACD: {s['macd']}\n"
-            f"VIX: {s['vix']} | Sentiment: {s['sentiment']}\n"
+            f"📍 Nom: {s['nom']}\n"
+            f"🏷️ Ticker: {s['ticker']}\n"
+            f"📊 Technique: RSI {s['rsi']} | MACD {s['macd']}\n"
+            f"🌍 Macro: VIX {s['vix']} | EMA200 {s['ema200']}\n"
+            f"📰 Sentiment: {s['sentiment']}\n"
             f"---------------------------\n"
-            f"💰 Achat Conseillé: {s['prix']}€\n"
-            f"🎯 Vente Conseillée: {s['tp']}€\n"
-            f"📈 Gain Prévu: +{s['gain_pct']}%\n"
-            f"🛡️ Stop Loss Suiveur: {s['sl_pct']}% (ATR x2)"
+            f"💰 Prix d'Achat Conseillé: {s['prix']}€\n"
+            f"🎯 Prix de Vente (TP): {s['tp']}€\n"
+            f"📈 Gains Prévus: +{s['gain_pct']}%\n"
+            f"🛡️ SL Suiveur: {s['sl_pct']}% (ATR x2)"
         )
         
         try:
@@ -215,13 +216,12 @@ class TradingBotV1Elite:
                 headers={
                     "Title": title.encode('utf-8'),
                     "Priority": "high",
-                    "Tags": "money,chart_with_upwards_trend"
+                    "Tags": "chart_with_upwards_trend,moneybag"
                 },
                 timeout=5
             )
             return True
-        except:
-            return False
+        except: return False
 
     def get_last_signals(self):
         return self.last_results
