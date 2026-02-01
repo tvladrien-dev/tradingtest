@@ -6,127 +6,157 @@ from ui.components import UIComponents
 class Dashboard:
     """
     Orchestrateur de l'interface utilisateur Alpha Quant.
-    Gère la mise en page, les onglets et la sécurité des données affichées.
+    Connecte le moteur TradingBotV1Elite aux composants graphiques.
     """
-    def __init__(self, settings):
-        self.settings = settings
+    def __init__(self, bot_instance):
+        """
+        Initialise le dashboard avec l'instance du bot pour accéder aux données.
+        :param bot_instance: Instance de TradingBotV1Elite
+        """
+        self.bot = bot_instance
         self.ui = UIComponents()
+        self.version = "12.5.2"
 
     def render_sidebar(self):
-        """Rendu de la barre latérale avec contrôles utilisateur."""
+        """Rendu de la barre latérale avec contrôles système."""
         with st.sidebar:
             st.markdown("### 🛠️ PANNEAU DE CONTRÔLE")
             st.divider()
             
             scan_mode = st.selectbox(
-                "Mode de Scan", 
-                ["⚡ Temps Réel (60s)", "🛡️ Prudent (5min)", "💤 Veille"],
+                "Fréquence d'Analyse", 
+                ["⚡ Haute Fréquence", "🛡️ Modéré", "💤 Mode Économie"],
                 index=0
             )
             
-            search_query = st.text_input("🔍 Rechercher un Ticker", "").upper()
+            st.text_input("🔍 Focus Ticker (Recherche)", "").upper()
             
+            if st.button("🚀 Lancer Synchronisation", use_container_width=True):
+                with st.spinner("Sync en cours..."):
+                    self.bot.sync_market_data()
+                    st.success("Flux synchronisé !")
+
             st.divider()
             st.markdown("### 📊 STATUT SYSTÈME")
-            st.success("Connexion Euronext : OK")
-            st.info(f"Version Bot : {self.settings.VERSION}")
+            st.success(f"Moteur Quant : OK")
+            st.info(f"Version : {self.version}")
             
-            return {"mode": scan_mode, "search": search_query}
+            # Affichage de la date de dernière sync
+            last_sync_str = self.bot.last_sync.strftime('%H:%M:%S') if self.bot.last_sync else "Aucune"
+            st.caption(f"Dernier flux : {last_sync_str}")
+            
+            return {"mode": scan_mode}
 
-    def render_main_view(self, market_status, signals_df, news_engine):
+    def render_main_view(self):
         """Génère l'interface principale organisée en onglets."""
         
-        # 1. En-tête avec métriques macro
+        # 1. Calcul des métriques macro pour le Header
+        # On simule ou calcule le régime de marché basé sur le premier ticker (ex: CAC40)
+        market_status = self._get_market_regime()
         self.ui.header_component(market_status)
         st.divider()
 
-        # 2. Structure par onglets
+        # 2. Exécution de l'analyse pour obtenir les signaux récents
+        signals = self.bot.process_signals()
+        signals_df = pd.DataFrame(signals) if signals else pd.DataFrame()
+
+        # 3. Structure par onglets
         tab_signals, tab_analysis, tab_news = st.tabs([
             "🎯 SIGNAUX ALPHA", 
             "📈 ANALYSE TECHNIQUE", 
-            "📰 FLUX ACTUALITÉS"
+            "📰 SENTIMENT & NEWS"
         ])
 
         # --- ONGLET 1 : SIGNAUX D'ACHAT ---
         with tab_signals:
-            if signals_df is None or signals_df.empty:
-                st.warning("Aucune donnée disponible. Attente du prochain flux...")
+            if signals_df.empty:
+                st.warning("⚠️ En attente de données. Veuillez lancer une synchronisation.")
             else:
-                # Filtrage des signaux d'achat (Signal == 1)
-                buy_signals = signals_df[signals_df['Signal'] == 1]
+                # Filtrage des opportunités (Probabilité > 70%)
+                buy_signals = signals_df[signals_df['probabilite'] >= 70]
                 
                 if buy_signals.empty:
-                    st.info("💡 Aucun signal d'achat détecté. Le marché est en phase d'observation.")
+                    st.info("💡 Aucun signal fort détecté. Le marché est en phase de compression.")
                 else:
-                    st.subheader(f"Opportunités détectées ({len(buy_signals)})")
-                    # On affiche les cartes de signaux
+                    st.subheader(f"Opportunités Détectées ({len(buy_signals)})")
+                    # Affichage des cartes stylisées
                     for _, row in buy_signals.iterrows():
                         self.ui.signal_card(
-                            ticker=row.get('Ticker', 'N/A'),
-                            price=row.get('Close', 0.0),
-                            change=row.get('Change', 0.0),
-                            rsi=row.get('RSI', 0.0),
-                            signal_type="ACHAT"
+                            ticker=row['ticker'],
+                            price=row['prix'],
+                            rsi=row['rsi'],
+                            proba=row['probabilite'],
+                            action=row['action'],
+                            sentiment=row['sentiment']
                         )
 
         # --- ONGLET 2 : ANALYSE TECHNIQUE DÉTAILLÉE ---
         with tab_analysis:
-            if signals_df is not None and not signals_df.empty:
-                # Menu de sélection de l'actif
-                available_tickers = sorted(signals_df['Ticker'].unique())
-                selected_ticker = st.selectbox("Choisir un actif à analyser", available_tickers)
+            if not self.bot.data_store:
+                st.info("Lancez une synchronisation pour charger les graphiques.")
+            else:
+                available_tickers = list(self.bot.data_store.keys())
+                selected_ticker = st.selectbox("Sélectionner un actif pour analyse profonde", available_tickers)
                 
-                # Extraction sécurisée de la ligne de données
-                ticker_row = signals_df[signals_df['Ticker'] == selected_ticker].iloc[0]
+                # RÉCUPÉRATION DE L'HISTORIQUE COMPLET (Point crucial pour le graphique)
+                df_full = self.bot.data_store[selected_ticker]
                 
                 col_chart, col_metrics = st.columns([3, 1])
                 
                 with col_chart:
-                    # Rendu du graphique via components.py
-                    # Note : ticker_row est transformé en DataFrame pour le graphique
-                    chart_df = pd.DataFrame([ticker_row]) 
-                    fig = self.ui.create_candlestick_chart(chart_df, selected_ticker)
+                    # On passe le DataFrame complet au composant UI
+                    fig = self.ui.create_candlestick_chart(df_full, selected_ticker)
                     if fig:
-                        st.plotly_chart(fig, width='stretch')
-                    else:
-                        st.error("Impossible de générer le graphique pour cet actif.")
+                        st.plotly_chart(fig, use_container_width=True)
                 
                 with col_metrics:
-                    st.markdown("#### ⚡ Métriques Clés")
-                    # Utilisation de .get() pour éviter tout crash si une colonne manque
-                    st.metric("RSI (14)", f"{ticker_row.get('RSI', 'N/A')}")
-                    st.metric("Dist. EMA200", f"{ticker_row.get('Dist_EMA200', 'N/A')}%")
-                    st.metric("ATR (Volatilité)", f"{ticker_row.get('ATR', 'N/A')}")
+                    # Affichage des métriques de la dernière bougie
+                    last_data = df_full.iloc[-1]
+                    st.markdown("#### ⚡ Dernières Données")
+                    st.metric("RSI (14)", f"{last_data.get('RSI', 0):.2f}")
+                    st.metric("EMA 200", f"{last_data.get('EMA200', 0):.2f}€")
                     
-                    status_color = "green" if ticker_row.get('Signal') == 1 else "gray"
-                    st.markdown(f"**Statut :** :{status_color}[{ticker_row.get('Status', 'NEUTRE')}]")
-            else:
-                st.info("Veuillez attendre la fin du premier scan pour l'analyse détaillée.")
+                    # Distance EMA200
+                    dist = ((last_data['Close'] / last_data['EMA200']) - 1) * 100
+                    st.metric("Distance EMA200", f"{dist:.2f}%", delta=f"{dist:.1f}%")
+                    
+                    st.markdown("---")
+                    st.caption("Stratégie : Convergence Trend-Following")
 
         # --- ONGLET 3 : ACTUALITÉS ET SENTIMENT ---
         with tab_news:
-            st.subheader("Dernières Actualités Marché")
-            try:
-                # Récupération des news macro (CAC 40 par défaut)
-                news_items = news_engine.get_news_for_ticker("CAC 40")
-                if news_items:
-                    for item in news_items[:8]: # Top 8 news
-                        with st.expander(f"{item['title']}"):
-                            st.write(f"**Source :** {item['source']}")
-                            st.write(f"**Date :** {item['date']}")
-                            st.link_button("Lire l'article", item['link'])
-                else:
-                    st.write("Aucune actualité récente trouvée.")
-            except Exception as e:
-                st.error(f"Erreur de chargement du flux news : {e}")
+            st.subheader("Analyse du Sentiment Algorithmique")
+            if not signals_df.empty:
+                # Création d'un tableau propre pour les news/sentiments
+                sentiment_table = signals_df[['ticker', 'prix', 'sentiment']].copy()
+                st.table(sentiment_table)
+            else:
+                st.write("Aucun sentiment extrait pour le moment.")
+
+    def _get_market_regime(self):
+        """Détermine le régime de marché global pour le header."""
+        # On vérifie si on a des données, sinon on renvoie des valeurs par défaut
+        if not self.bot.data_store:
+            return {'status': 'SCAN REQUIS', 'dist_ema_200': 0, 'volatility': 0, 'multiplier': 1}
+        
+        # Logique simplifiée : on prend le premier ticker pour l'indice de tendance
+        first_ticker = list(self.bot.data_store.keys())[0]
+        df = self.bot.data_store[first_ticker]
+        last = df.iloc[-1]
+        
+        dist = ((last['Close'] / last['EMA200']) - 1) * 100
+        regime = "BULLISH 🚀" if dist > 0 else "BEARISH 📉"
+        
+        return {
+            'status': regime,
+            'dist_ema_200': round(dist, 2),
+            'volatility': 21, # Valeur fixe ou calculée via ATR/VIX
+            'multiplier': 1 if dist < 0 else 2
+        }
 
     def render_footer(self):
-        """Pied de page avec avertissements légaux."""
+        """Pied de page institutionnel."""
         st.divider()
-        footer_cols = st.columns([3, 1])
-        with footer_cols[0]:
-            st.caption("© 2026 Alpha Quant PEA Engine - Terminal Professionnel.")
-            st.caption("Avertissement : Les performances passées ne préjugent pas des performances futures. Risque de perte en capital.")
-        with footer_cols[1]:
-            if st.button("🔄 Refresh"):
-                st.rerun()
+        st.caption("ALPHA QUANT TERMINAL © 2026 - Flux de données sécurisé via Yahoo Finance API.")
+        if st.button("♻️ Recharger l'Interface"):
+            st.rerun()
