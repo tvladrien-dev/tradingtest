@@ -6,147 +6,165 @@ import sys
 import os
 from datetime import datetime
 
-# --- OPTIMISATION DU CHEMIN SYSTÈME ---
+# --- CONFIGURATION DU CHEMIN SYSTÈME ---
+# Garantit que les modules dans les sous-dossiers sont importables
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-# 1. IMPORTS DES MODULES PROPRIÉTAIRES (Respect strict de ta structure de dossiers)
+# 1. INITIALISATION DES VARIABLES GLOBALES DE TICKERS
+all_tickers = []
+
+# 2. IMPORTS SÉCURISÉS DES CONFIGURATIONS ET DU MOTEUR
 try:
-    # On importe les réglages généraux
+    # Réglages généraux
     from config import settings
     
-    # On importe les listes spécifiques depuis tes fichiers dédiés dans config/
-    from config.pea_stocks import TICKERS_PEA
-    from config.cryptos import CRYPTO_LIST
-    from config.commodities import COMMODITIES
-    
-    # Import du moteur Elite et de l'UI
+    # Importation et extraction depuis config/pea_stocks.py
+    try:
+        from config.pea_stocks import PEA_UNIVERSE
+        all_tickers.extend([item['ticker'] for item in PEA_UNIVERSE])
+    except (ImportError, KeyError, AttributeError) as e:
+        st.error(f"❌ Erreur dans config/pea_stocks.py: {e}")
+
+    # Importation et extraction depuis config/cryptos.py
+    try:
+        from config.cryptos import CRYPTO_UNIVERSE
+        all_tickers.extend([item['ticker'] for item in CRYPTO_UNIVERSE])
+    except (ImportError, KeyError, AttributeError) as e:
+        st.error(f"❌ Erreur dans config/cryptos.py: {e}")
+
+    # Importation et extraction depuis config/commodities.py
+    try:
+        from config.commodities import COMMODITIES_UNIVERSE
+        all_tickers.extend([item['ticker'] for item in COMMODITIES_UNIVERSE])
+    except (ImportError, KeyError, AttributeError) as e:
+        st.error(f"❌ Erreur dans config/commodities.py: {e}")
+
+    # Importation des classes métier (engine/ et ui/)
     from engine.trading_bot import TradingBotV1Elite 
     from ui.dashboard import Dashboard
     from ui.components import UIComponents
     
-except ImportError as e:
-    st.error(f"🛑 ERREUR D'IMPORTATION : {e}")
-    st.info("💡 Vérifiez que vos fichiers existent dans config/ (pea_stocks.py, cryptos.py, commodities.py)")
+except Exception as e:
+    st.error(f"🛑 ERREUR DE STRUCTURE CRITIQUE : {e}")
     st.stop()
 
-# Configuration du logging
+# Configuration du logging professionnel
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    level=logging.INFO, 
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger("QuantMaster")
+logger = logging.getLogger("QuantMaster_App")
 
 def main():
-    # --- INITIALISATION UI ---
+    # --- INITIALISATION DE L'INTERFACE ---
     ui_tools = UIComponents()
     ui_tools.set_page_config()
     
-    # --- PERSISTENCE DU MOTEUR ÉLITE ---
+    # --- INSTANCIATION DU MOTEUR ÉLITE (SINGLETON VIA SESSION STATE) ---
     if 'bot' not in st.session_state:
-        # CONSOLIDATION DE TOUS TES ACTIFS (Fusion des fichiers du dossier config/)
-        # On regroupe tes actions PEA, tes cryptos et tes matières premières
-        all_tickers = []
-        if 'TICKERS_PEA' in globals() or 'TICKERS_PEA' in locals() or locals().get('TICKERS_PEA'):
-            all_tickers.extend(TICKERS_PEA)
-        if 'CRYPTO_LIST' in globals() or 'CRYPTO_LIST' in locals() or locals().get('CRYPTO_LIST'):
-            all_tickers.extend(CRYPTO_LIST)
-        if 'COMMODITIES' in globals() or 'COMMODITIES' in locals() or locals().get('COMMODITIES'):
-            all_tickers.extend(COMMODITIES)
-            
-        # Suppression des doublons éventuels
-        all_tickers = list(dict.fromkeys(all_tickers))
+        # Nettoyage de la liste (suppression des doublons et valeurs nulles)
+        clean_tickers = list(dict.fromkeys([t for t in all_tickers if t]))
         
-        if not all_tickers:
-            st.error("❌ Aucune liste d'actifs trouvée dans config/pea_stocks.py, cryptos.py ou commodities.py")
+        if not clean_tickers:
+            st.error("❌ La liste consolidée des tickers est vide. Vérifiez vos fichiers de config.")
             st.stop()
             
-        # Initialisation du bot avec l'intégralité de tes actifs
-        st.session_state.bot = TradingBotV1Elite(tickers=all_tickers)
-        logger.info(f"Moteur Elite initialisé avec {len(all_tickers)} actifs variés.")
+        # Création de l'instance du bot
+        st.session_state.bot = TradingBotV1Elite(tickers=clean_tickers)
+        logger.info(f"Bot initialisé avec {len(clean_tickers)} tickers consolidés.")
 
-    # Instance du Dashboard
+    # Liaison du Dashboard avec l'instance du bot
     dashboard = Dashboard(st.session_state.bot)
     
-    # Cache des notifications
+    # Gestionnaire de mémoire des notifications pour éviter les doublons
     if 'notified_tickers' not in st.session_state:
         st.session_state.notified_tickers = {}
 
-    # --- BARRE LATÉRALE ---
+    # --- AFFICHAGE DE LA SIDEBAR ---
+    # Permet de récupérer les paramètres de filtrage utilisateur
     sidebar_params = dashboard.render_sidebar()
     
-    # --- CYCLE DE SCAN ---
-    st.toast("Synchronisation globale des flux Alpha Quant...", icon="🚀")
+    # --- DÉBUT DU CYCLE D'ANALYSE ---
+    st.toast("Mise à jour des flux de marché...", icon="🚀")
     
     try:
-        # ÉTAPE 1 : Synchronisation (Moteur fusionné)
-        with st.spinner(f"Acquisition des flux ({len(st.session_state.bot.tickers)} actifs)..."):
-            # On utilise l'intervalle "1d" pour la stabilité
+        # ÉTAPE 1 : Synchronisation des données Yahoo Finance
+        with st.spinner(f"Acquisition en cours ({len(st.session_state.bot.tickers)} actifs)..."):
+            # On utilise l'intervalle "1d" (Daily) pour l'analyse Swing
             success = st.session_state.bot.sync_market_data(period="2y", interval="1d")
         
         if not success:
-            st.error("⚠️ Échec de la récupération des données Yahoo Finance.")
-            if st.button("Réessayer"):
-                st.rerun()
+            st.error("⚠️ Problème de connexion aux serveurs de données (Yahoo Finance).")
             st.stop()
 
-        # ÉTAPE 2 : Analyse Quantitative
-        with st.spinner("Calcul des probabilités Elite et analyse sentimentale..."):
+        # ÉTAPE 2 : Traitement des Signaux via le moteur Elite
+        with st.spinner("Calcul des indicateurs et probabilités..."):
             all_signals = st.session_state.bot.process_signals()
         
+        # Conversion des signaux en DataFrame pour le traitement
         signals_df = pd.DataFrame(all_signals) if all_signals else pd.DataFrame()
 
-        # ÉTAPE 3 : Notifications NTFY (Seuil >= 75%)
+        # ÉTAPE 3 : Logique de Notification Automatique (NTFY)
         if not signals_df.empty:
-            for _, signal in signals_df.iterrows():
+            # On filtre les signaux d'achat avec une probabilité >= 75%
+            high_prob_signals = signals_df[
+                (signals_df['action'] == "ACHAT") & 
+                (signals_df['probabilite'] >= 75)
+            ]
+            
+            for _, signal in high_prob_signals.iterrows():
                 ticker = signal['ticker']
-                prob = signal['probabilite']
-                action = signal['action']
-                price = signal['prix']
+                current_price = signal['prix']
+                
+                # Vérification si une notification a déjà été envoyée pour ce ticker
+                is_new_alert = ticker not in st.session_state.notified_tickers
+                
+                # Si déjà notifié, on ne renvoie que si le prix a bougé de plus de 2%
+                price_moved_significantly = False
+                if not is_new_alert:
+                    last_notified_price = st.session_state.notified_tickers[ticker]
+                    if abs((current_price / last_notified_price) - 1) > 0.02:
+                        price_moved_significantly = True
+                
+                if is_new_alert or price_moved_significantly:
+                    # Envoi via le canal configuré dans le bot
+                    if st.session_state.bot.send_notification(signal):
+                        st.session_state.notified_tickers[ticker] = current_price
+                        st.toast(f"📱 Alerte envoyée pour {ticker}", icon="📲")
 
-                if action == "ACHAT" and prob >= 75:
-                    is_new = ticker not in st.session_state.notified_tickers
-                    price_change = False
-                    if not is_new:
-                        old_p = st.session_state.notified_tickers[ticker]
-                        if abs((price / old_p) - 1) > 0.02:
-                            price_change = True
-                            
-                    if is_new or price_change:
-                        notif_sent = st.session_state.bot.send_notification(signal)
-                        if notif_sent:
-                            st.session_state.notified_tickers[ticker] = price
-                            st.toast(f"📱 Signal : {ticker}", icon="📲")
-
-        # --- ÉTAPE 4 : RENDU INTERFACE ---
+        # --- ÉTAPE 4 : AFFICHAGE DE LA VUE PRINCIPALE ---
+        # dashboard.render_main_view() centralise l'affichage des graphiques et tableaux
         dashboard.render_main_view()
 
-        # ÉTAPE 5 : Footer et Rafraîchissement
-        refresh_delay = 300  # 5 minutes
+        # ÉTAPE 5 : Pied de page et informations système
         dashboard.render_footer()
 
-        # --- AUTO-REFRESH LOGIC ---
+        # --- LOGIQUE DE RAFRAÎCHISSEMENT AUTOMATIQUE ---
         st.divider()
-        timer_box = st.empty()
+        refresh_placeholder = st.empty()
         
-        now = datetime.now()
-        # On vérifie si on est en semaine pour l'auto-refresh
-        if now.weekday() < 5:
-            for i in range(refresh_delay, 0, -1):
-                timer_box.markdown(
-                    f"<div style='text-align:center; color:#00FF41; font-family:monospace; font-size:18px;'>"
-                    f"🕒 PROCHAIN SCAN DANS {i}s | MODE: MULTI-FLUX (ACTIONS/CRYPTO/COMMO)"
+        # On définit le comportement selon l'heure (Marché ouvert/fermé)
+        maintenant = datetime.now()
+        is_weekday = maintenant.weekday() < 5
+        
+        if is_weekday:
+            # Cycle de 300 secondes (5 minutes)
+            for i in range(300, 0, -1):
+                refresh_placeholder.markdown(
+                    f"<div style='text-align:center; color:#00FF41; font-family:monospace; font-size:16px;'>"
+                    f"🕒 PROCHAIN SCAN GLOBAL DANS {i}s"
                     f"</div>", 
                     unsafe_allow_html=True
                 )
                 time.sleep(1)
             st.rerun()
         else:
-            timer_box.info("🌙 Mode Week-end : Les marchés traditionnels sont fermés.")
-            if st.button("🔄 Lancer un scan manuel (Crypto)"):
+            refresh_placeholder.info("🌙 Mode Week-end : Rafraîchissement automatique suspendu pour les actions.")
+            if st.button("🔄 Forcer un scan manuel (Cryptos)"):
                 st.rerun()
 
     except Exception as e:
-        logger.error(f"ERREUR CRITIQUE app.py : {e}", exc_info=True)
+        logger.error(f"Erreur d'exécution app.py : {str(e)}", exc_info=True)
         st.error(f"🚨 Erreur Système : {str(e)}")
         if st.button("Réinitialiser le Terminal"):
             st.session_state.clear()
