@@ -4,38 +4,41 @@ import ta
 import requests
 import matplotlib.pyplot as plt
 import logging
+import time
 from datetime import datetime
 
-# Configuration du logging
+# Configuration rigoureuse du logging pour Streamlit
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("TradingEngine")
+logger = logging.getLogger("TradingBotElite")
 
 class TradingBotV1Elite:
     """
-    Moteur de Trading Hybride V1 "Elite"
-    Analyse 2 ans (Tendance) + 60 jours (Timing 5min)
+    Moteur de Trading Haute Précision
+    Analyse Long Terme (2 ans) + Exécution Intra-day (5 min)
     """
     def __init__(self, tickers=None):
         self.tickers = tickers if tickers else []
-        self.ntfy_url = "https://ntfy.sh/votre_topic_unique_2026" # À personnaliser
+        # Remplace par ton propre lien NTFY ou secret
+        self.ntfy_url = "https://ntfy.sh/trading_bot_pea_2026" 
 
     def get_news_sentiment(self, ticker):
-        """Analyse textuelle du sentiment des news via Yahoo Finance."""
+        """Analyse le sentiment basé sur les derniers titres de presse."""
         try:
             stock = yf.Ticker(ticker)
             news = stock.news
             if not news:
                 return "Neutre ⚪", 0
             
-            # Analyse des 5 derniers titres
-            titles = [n['title'].lower() for n in news[:5]]
-            pos_words = ['hausse', 'gain', 'contrat', 'croissance', 'succès', 'achat', 'record']
-            neg_words = ['baisse', 'chute', 'perte', 'dette', 'inflation', 'vente', 'litige']
+            positive_keywords = ['hausse', 'croissance', 'succès', 'achat', 'profit', 'contrat', 'excédent']
+            negative_keywords = ['chute', 'baisse', 'perte', 'déficit', 'alerte', 'litige', 'inflation']
             
             score = 0
-            for title in titles:
-                score += sum(1 for w in pos_words if w in title)
-                score -= sum(1 for w in neg_words if w in title)
+            recent_titles = [n['title'].lower() for n in news[:5]]
+            for title in recent_titles:
+                for pw in positive_keywords:
+                    if pw in title: score += 1
+                for nw in negative_keywords:
+                    if nw in title: score -= 1
             
             label = "Positif ✅" if score > 0 else ("Négatif ⚠️" if score < 0 else "Neutre ⚪")
             return label, score
@@ -44,140 +47,156 @@ class TradingBotV1Elite:
             return "Indisponible ❓", 0
 
     def process_ticker(self, ticker):
-        """Analyse complète d'un actif avec stratégie multi-timeframe."""
+        """Analyse complète multi-timeframe pour un ticker donné."""
         try:
-            # --- 1. ACQUISITION DES DONNÉES ---
-            # Données Journalières (2 ans) pour l'EMA 200
-            df_daily = yf.download(ticker, period="2y", interval="1d", progress=False)
-            # Données Intra-day (60j max pour intervalle 5m) pour le timing
-            df_now = yf.download(ticker, period="60d", interval="5m", progress=False)
-
-            if df_daily.empty or df_now.empty or len(df_now) < 50:
-                logger.error(f"Données insuffisantes pour {ticker}")
+            # --- PHASE 1 : ANALYSE TENDANCE 2 ANS (Daily) ---
+            # Yahoo permet 2y en intervalle '1d' sans problème
+            df_long = yf.download(ticker, period="2y", interval="1d", progress=False, threads=False)
+            
+            if df_long.empty or len(df_long) < 200:
+                logger.error(f"{ticker} : Données historiques (2 ans) insuffisantes.")
                 return None
 
-            # --- 2. INDICATEURS LONG TERME (SUR 2 ANS) ---
-            df_daily['EMA200'] = ta.trend.ema_indicator(df_daily['Close'], window=200)
-            ema200_long = float(df_daily['EMA200'].iloc[-1])
+            # Moyenne Mobile Exponentielle 200 (Le juge de paix du trader)
+            df_long['EMA200'] = ta.trend.ema_indicator(df_long['Close'], window=200)
+            ema200_long = float(df_long['EMA200'].iloc[-1])
 
-            # --- 3. INDICATEURS TEMPS RÉEL (SUR 5 MIN) ---
-            # RSI
+            # --- PHASE 2 : ANALYSE TIMING (5 Minutes) ---
+            # On récupère le max autorisé par Yahoo pour du 5min (60 jours)
+            df_now = yf.download(ticker, period="60d", interval="5m", progress=False, threads=False)
+
+            if df_now.empty:
+                logger.error(f"{ticker} : Données 5min introuvables.")
+                return None
+
+            # Calcul des indicateurs techniques sur le flux 5 min
             df_now['RSI'] = ta.momentum.rsi(df_now['Close'], window=14)
-            # MACD
-            macd = ta.trend.MACD(df_now['Close'])
-            df_now['MACD_Hist'] = macd.macd_diff()
-            # ATR (Volatilité pour Stop Loss)
+            macd_obj = ta.trend.MACD(df_now['Close'])
+            df_now['MACD_Hist'] = macd_obj.macd_diff()
             df_now['ATR'] = ta.volatility.average_true_range(df_now['High'], df_now['Low'], df_now['Close'])
             
-            # Valeurs actuelles
+            # Extraction des dernières valeurs scalaires
             last_close = float(df_now['Close'].iloc[-1])
             last_rsi = float(df_now['RSI'].iloc[-1])
-            last_macd_hist = float(df_now['MACD_Hist'].iloc[-1])
-            prev_macd_hist = float(df_now['MACD_Hist'].iloc[-2])
+            last_macd_h = float(df_now['MACD_Hist'].iloc[-1])
+            prev_macd_h = float(df_now['MACD_Hist'].iloc[-2])
             last_atr = float(df_now['ATR'].iloc[-1])
 
-            # --- 4. ANALYSE MACRO & SENTIMENT ---
+            # --- PHASE 3 : MACRO & SENTIMENT ---
             vix_data = yf.download("^VIX", period="1d", progress=False)
             vix_price = float(vix_data['Close'].iloc[-1]) if not vix_data.empty else 20.0
             sentiment_label, sentiment_score = self.get_news_sentiment(ticker)
 
-            # --- 5. CALCUL DE LA PROBABILITÉ (SCORE 0-100) ---
+            # --- PHASE 4 : LOGIQUE DE SCORE (PROBABILITÉ) ---
             prob = 0
-            if last_close > ema200_long: prob += 35      # Tendance de fond (2 ans)
-            if last_rsi < 45: prob += 25                # Zone de survente/opportunité
-            if last_macd_hist > prev_macd_hist: prob += 20 # Accélération haussière
-            if vix_price < 25: prob += 15               # Calme macro-économique
-            if sentiment_score > 0: prob += 5           # News positives
+            # 1. Tendance de fond (Daily vs 2 ans) : Crucial
+            if last_close > ema200_long: 
+                prob += 40 
+            
+            # 2. Timing RSI (5 min) : Zone de rebond
+            if last_rsi < 40: prob += 25
+            elif last_rsi < 55: prob += 15
+            
+            # 3. Momentum MACD (5 min) : Accélération
+            if last_macd_h > prev_macd_h: prob += 20
+            
+            # 4. Contexte Marché (VIX)
+            if vix_price < 22: prob += 15
+            elif vix_price > 30: prob -= 20 # Pénalité forte si panique marché
 
-            # --- 6. GESTION DU RISQUE (STOP LOSS & TAKE PROFIT) ---
-            # Stop Loss Suiveur basé sur 2x l'ATR
-            sl_suiveur_val = last_atr * 2
-            sl_pct = (sl_suiveur_val / last_close) * 100
-            # Take Profit à 3x l'ATR pour un ratio risque/récompense de 1:1.5
-            tp_price = last_close + (last_atr * 3)
+            # --- PHASE 5 : GESTION DU RISQUE (ATR DYNAMIQUE) ---
+            # Stop Loss à 2x l'ATR (adapté à la volatilité 5 min)
+            sl_value = last_atr * 2
+            sl_percent = (sl_value / last_close) * 100
+            
+            # Take Profit à 3.5x l'ATR (Ratio Risk/Reward > 1.5)
+            tp_price = last_close + (last_atr * 3.5)
             potential_gain = ((tp_price / last_close) - 1) * 100
 
-            # --- 7. DÉCISION ---
+            # --- PHASE 6 : DÉCISION FINALE ---
             action = "VEILLE"
-            if prob >= 70 and last_rsi < 50:
+            if prob >= 75 and last_rsi < 50:
                 action = "ACHAT"
-            elif last_rsi > 75:
+            elif last_rsi > 80:
                 action = "VENTE"
 
-            # Récupération infos société
+            # Récupération secteur pour le graphique
             info = yf.Ticker(ticker).info
-            
+            sector = info.get('sector', 'Divers')
+
             return {
                 'ticker': ticker,
                 'nom': info.get('shortName', ticker),
-                'secteur': info.get('sector', 'Inconnu'),
+                'secteur': sector,
                 'prix': last_close,
                 'rsi': last_rsi,
                 'vix': vix_price,
                 'ema200': ema200_long,
-                'macd_status': "HAUSSIER" if last_macd_hist > prev_macd_hist else "STAGNANT",
-                'sl_pct': sl_pct,
+                'macd_evol': "Hausse" if last_macd_h > prev_macd_h else "Baisse",
+                'sl_pct': sl_percent,
                 'tp': tp_price,
-                'gains_pct': potential_gain,
+                'gains_potentiels': potential_gain,
                 'probabilite': prob,
                 'sentiment': sentiment_label,
                 'action': action,
-                'horodatage': datetime.now().strftime("%H:%M:%S")
+                'last_update': datetime.now().strftime("%H:%M:%S")
             }
+
         except Exception as e:
-            logger.error(f"Erreur lors de l'analyse de {ticker}: {e}")
+            logger.error(f"Erreur fatale sur {ticker}: {str(e)}")
             return None
 
     def plot_sectors(self, results):
-        """Génère un diagramme circulaire des secteurs où des signaux d'achat sont détectés."""
+        """Génère une visualisation des opportunités par secteur."""
         buys = [r['secteur'] for r in results if r['action'] == "ACHAT"]
         if not buys:
+            logger.info("Aucun achat détecté, graphique sectoriel sauté.")
             return None
         
-        plt.figure(figsize=(10, 6), facecolor='#0E1117')
-        s_counts = pd.Series(buys).value_counts()
-        colors = ['#00FF41', '#008F11', '#003B00', '#005C00']
+        plt.figure(figsize=(12, 7), facecolor='#0E1117')
+        data = pd.Series(buys).value_counts()
         
-        plt.pie(s_counts, labels=s_counts.index, autopct='%1.1f%%', 
-                startangle=140, textprops={'color':"w"}, colors=colors)
-        plt.title("Répartition des Opportunités d'Achat par Secteur", color="w")
-        plt.savefig("secteurs_conseilles.png")
+        colors = ['#22C55E', '#16A34A', '#15803D', '#166534', '#14532D']
+        plt.pie(data, labels=data.index, autopct='%1.1f%%', startangle=140,
+                textprops={'color': "white", 'weight': 'bold'}, colors=colors)
+        
+        plt.title("Répartition Sectorielle des Signaux d'Achat", color="white", fontsize=14)
+        path = "secteurs_conseilles.png"
+        plt.savefig(path, dpi=100)
         plt.close()
-        return "secteurs_conseilles.png"
+        return path
 
-    def send_notification(self, d):
-        """Envoie une alerte complète et formatée via NTFY."""
-        emoji = "🚀" if d['action'] == "ACHAT" else "💰"
-        title = f"ALERTE {d['action']} : {d['ticker']} ({d['probabilite']}%)"
+    def send_notification(self, data):
+        """Envoie une alerte formatée vers NTFY."""
+        if data['action'] == "VEILLE":
+            return
         
-        msg = (
-            f"{emoji} SIGNAL : {d['action']}\n"
-            f"📈 Probabilité : {d['probabilite']}%\n"
+        emoji = "🟢" if data['action'] == "ACHAT" else "🔴"
+        title = f"{emoji} {data['action']} {data['ticker']} - Score: {data['probabilite']}%"
+        
+        message = (
+            f"🎯 Actif : {data['nom']} ({data['ticker']})\n"
+            f"💰 Prix : {data['prix']:.2f}€\n"
+            f"📈 Probabilité : {data['probabilite']}%\n"
             f"--------------------------------\n"
-            f"💵 Prix Actuel : {d['prix']:.2f}€\n"
-            f"📊 RSI : {d['rsi']:.1f} | VIX : {d['vix']:.1f}\n"
-            f"📉 EMA200 (2 ans) : {d['ema200']:.2f}€\n"
-            f"🌍 News : {d['sentiment']}\n"
+            f"📊 RSI : {data['rsi']:.1f} | VIX : {data['vix']:.1f}\n"
+            f"📉 EMA 200 (2 ans) : {data['ema200']:.2f}€\n"
+            f"📰 Sentiment : {data['sentiment']}\n"
             f"--------------------------------\n"
-            f"🛡️ STOP LOSS SUIVEUR : -{d['sl_pct']:.2f}%\n"
-            f"🎯 OBJECTIF (TP) : {d['tp']:.2f}€\n"
-            f"💰 GAIN POTENTIEL : +{d['gains_pct']:.2f}%\n"
-            f"⏰ Heure : {d['horodatage']}"
+            f"🛡️ Stop Loss : -{data['sl_pct']:.2f}%\n"
+            f"🚀 Objectif TP : {data['tp']:.2f}€ (+{data['gains_potentiels']:.2f}%)\n"
+            f"⏰ Signal généré à : {data['last_update']}"
         )
-        
+
         try:
-            response = requests.post(
+            requests.post(
                 self.ntfy_url,
-                data=msg.encode('utf-8'),
+                data=message.encode('utf-8'),
                 headers={
                     "Title": title,
-                    "Priority": "high",
-                    "Tags": "chart_with_upwards_trend,moneybag"
+                    "Priority": "urgent" if data['probabilite'] > 85 else "default",
+                    "Tags": "money_with_wings,chart_with_upwards_trend"
                 }
             )
-            return response.status_code == 200
         except Exception as e:
-            logger.error(f"Erreur d'envoi NTFY : {e}")
-            return False
-
-# Fin du fichier trading_bot.py
+            logger.error(f"Erreur notification : {e}")
